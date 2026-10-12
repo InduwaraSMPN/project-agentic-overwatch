@@ -1,0 +1,125 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evidence-aggregator
+  namespace: monitor
+  labels: &labels
+    app.kubernetes.io/name: evidence-aggregator
+    app.kubernetes.io/component: monitor
+    app.kubernetes.io/part-of: agentic-overwatch
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: evidence-aggregator
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      automountServiceAccountToken: false
+      # Pinned to the control-plane node. On the Docker Desktop WSL2 profile only one node
+      # container receives the real evidence hostPath bind — the host directory lives in the
+      # Ubuntu distro and the kind nodes run in the docker-desktop distro, so the other node
+      # gets a phantom empty directory (ADR-062). That real bind is on the control-plane, which
+      # is also where the kube-apiserver writes k8s_audit.jsonl, so co-locating the aggregator
+      # there is what makes its fragments reach the host the runner collates from. Falco and
+      # Alertmanager reach the aggregator over its Service, so the pin loses no evidence.
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # The evidence hostPath is an ext4 directory that enforces real ownership. up.sh creates
+      # the host directory as the operator uid (1000), not the Monitor uid, so the non-root
+      # aggregator (uid 65532, from the image's USER line) cannot create its aggregator/ subtree
+      # under it and ingestion fails with EACCES. This root init container hands the directory to
+      # the Monitor uid/gid once per pod start. It runs no inference path, so .agents/rules/40 is
+      # untouched; the monitor namespace sets no restricted Pod Security label, so a root init
+      # container with these three capabilities is admissible. See ADR-062.
+      initContainers:
+        - name: prepare-evidence-dir
+          image: agentic-overwatch/evidence-aggregator:local
+          imagePullPolicy: Never
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              d=/var/lib/overwatch/evidence
+              # Two distinct-uid writers share this tree with no common group: the aggregator pod
+              # (uid 65532) writes aggregator/events/, and the host RUNNER (the operator uid, 1000)
+              # performs the ADR-054 per-run archive rename of aggregator/events -> aggregator/archive
+              # on the host. 0775 owned by 65532 (the earlier choice) locked the runner out with
+              # EACCES on aggregator/archive. A shared group would need host ACLs (setfacl, an apt
+              # dependency `make up` must not require), so the aggregator/ directory the two share is
+              # made writable by both. The pre-created aggregator/ is what the runner renames within;
+              # deeper events/<source>/<digest> dirs the pod creates are only read or moved-as-a-unit
+              # by the runner, so they need no widening. ADR-062 (superseded 0775 choice recorded there).
+              mkdir -p "$d/aggregator"
+              chown 65532:65532 "$d" "$d/aggregator"
+              chmod 0777 "$d" "$d/aggregator"
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: evidence
+              mountPath: /var/lib/overwatch/evidence
+      containers:
+        - name: evidence-aggregator
+          image: agentic-overwatch/evidence-aggregator:local
+          imagePullPolicy: Never
+          # umask 000 so every directory and file the aggregator creates under the shared evidence
+          # tree is group/other-writable. The host RUNNER (operator uid 1000) performs ADR-054's
+          # per-run atomic rename of aggregator/events -> aggregator/archive at BOTH run boundaries;
+          # renaming a directory needs write on the directory being moved (POSIX updates its `..`),
+          # and the aggregator re-creates events/ on its next ingestion after each rename. Under the
+          # default umask 022 that events/ is 0755 owned by the pod uid (65532), so the operator
+          # cannot move it and the run fails to seal (EACCES on aggregator/archive). The two writers
+          # share no group and host POSIX ACLs are unavailable (no setfacl on the WSL2 image), so the
+          # aggregator writes world-permissive into the tree it shares with the runner. ADR-062.
+          command: ["/bin/sh", "-c", "umask 000; exec python -m monitor.http_service"]
+          envFrom:
+            - configMapRef:
+                name: evidence-aggregator-config
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          # Readiness includes calibrated caps, so rollout cannot pass while ingestion returns 503.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: evidence
+              mountPath: /var/lib/overwatch/evidence
+      volumes:
+        - name: evidence
+          hostPath:
+            path: /var/lib/overwatch/evidence
+            type: Directory

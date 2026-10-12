@@ -1,0 +1,74 @@
+# infra/boutique-overlays/ci-bringup/kustomization.yaml -- the CI-only overlay that sizes Online
+# Boutique to a GitHub-hosted runner's envelope (M10 WS-7, ADR-135, ADR-140, ADR-147).
+#
+# WHY A SIBLING OF infra/boutique AND NOT infra/boutique/overlays/ci-bringup
+#   This overlay composes over infra/boutique. Kustomize refuses to build a child whose `resources`
+#   reaches a directory that contains the child itself -- the first attempt lived at
+#   infra/boutique/overlays/ci-bringup and `kustomize build` failed with
+#
+#       cycle detected: candidate root '.../infra/boutique' contains visited root
+#                       '.../infra/boutique/overlays/ci-bringup'
+#
+#   so the overlay is a SIBLING of the base, not a descendant. A sibling costs one extra path
+#   segment: from here `../..` is `infra`, so the base is `../../boutique`.
+#
+# WHY THIS OVERLAY EXISTS
+#   `env-bringup.yml` performs a genuine from-scratch `make up` on a hosted runner, and it has failed
+#   on every scheduled run since 2026-08-31 at layer 4 with the SAME five boutique Deployments at
+#   0/N. The reason was not a timeout and not a flaky image pull: the pods were Pending with no node
+#   assigned, and `kubectl describe` reported
+#
+#       0/2 nodes are available: 1 Insufficient cpu, 1 node(s) had untolerated taint(s)
+#
+#   A two-node kind cluster has ONE schedulable node -- kind taints the control-plane, and
+#   infra/kind-config.yaml deliberately keeps it that way -- and `ubuntu-latest` on a private
+#   repository is a 2-vCPU runner. Online Boutique's base manifests request 2770m of CPU across the
+#   replica counts infra/boutique/kustomization.yaml sets, which cannot fit in that node's ~1.9 CPU
+#   of allocatable. Raising UP_WAIT_TIMEOUT to 1200s (which landed in 4c337a5 and did not help) could
+#   never have fixed it: nothing was slow, the scheduler had simply refused the pods.
+#
+# WHY REQUESTS ONLY, AND NEVER REPLICAS
+#   `replicas` is not a resource knob in this project. Every `target.replicas` in
+#   scenarios/manifests/ and every verified-recovery `replicas-at-least` minimum in
+#   scenarios/groundtruth/ restates the counts in infra/boutique/kustomization.yaml, and ADR-061
+#   holds the four places together. Changing a count here would silently invalidate the scenario
+#   slate for a CI convenience, so this overlay changes only `resources.requests`, which the
+#   scheduler reads and the application does not.
+#
+# WHY A REQUEST OF 10m IS HONEST RATHER THAN A TRICK
+#   A request is a scheduling reservation, not a performance guarantee and not a cap: the container
+#   may still use as much CPU as its (unchanged) limit and as much memory as its (unchanged) request
+#   allows. What this bring-up proves is that the platform comes up from scratch and that the
+#   application becomes Ready -- not that it performs under load, which no CI run measures and no
+#   campaign draws on. The campaign host runs `infra/boutique` unmodified, so the application under
+#   test is stock everywhere the study measures it. This is the trade the workflow's own V21 comment
+#   records ("requests only, never replicas, never used by a campaign").
+#
+# WHAT THIS OVERLAY DOES NOT DO
+#   It does not touch memory: the runner has ~7 GB and the base's 2048Mi of memory requests fits
+#   comfortably, so widening the delta beyond the constraint that actually binds would be change
+#   without evidence. It does not remove the control-plane taint or add a node: both kind nodes are
+#   containers on the same 2-vCPU host, so neither adds capacity.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   `env-bringup.yml`'s `BOUTIQUE_OVERLAY` (which selects this directory) and the two-consecutive-
+#   green-runs item of the M10 plan section 7 freeze checklist. A bring-up that uses this overlay is
+#   NOT a campaign bring-up and must not be presented as one.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # `../../boutique` is infra/boutique -- the base overlay every other bring-up applies, including
+  # the campaign host's. Composing over it rather than restating it is what keeps the digest pins,
+  # the loadgenerator deletion, the emailservice probe patch, the namespace and the replica counts
+  # single-homed (ADR-135). From this directory (`infra/boutique-overlays/ci-bringup`) `../..` is
+  # `infra`, so the base is reached one level deeper, at `../../boutique`.
+  - ../../boutique
+
+patches:
+  # Reduces `resources.requests.cpu` on every boutique container, and nothing else. One document per
+  # Deployment, because a Kustomize strategic-merge patch matches by name and there is no
+  # "every Deployment" target; the names and container names are upstream's at v0.10.6 and
+  # infra/tests asserts the base ref against infra/versions.env's BOUTIQUE_MANIFEST_REF.
+  - path: reduce-cpu-requests.yaml

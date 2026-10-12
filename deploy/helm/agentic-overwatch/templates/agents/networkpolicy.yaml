@@ -1,0 +1,101 @@
+# Templated from infra/netpol/agents-default-deny.yaml and infra/netpol/agents-g2-open.yaml.
+# Read those files for the full argument (why a Kubernetes NetworkPolicy alone already denies
+# the API server under Cilium, why the CiliumNetworkPolicy exists anyway to STATE the denial,
+# and why deny beats every allow). This template changes only namespace names and the single
+# open/closed toggle described below; the DNS rule, the Guardian rule and the two API-server
+# ports are copied unchanged.
+#
+# THE T-11 OBJECT: default-deny egress for every pod in the agents namespace, with exactly two
+# exceptions (cluster DNS, the Guardian's mediation surface).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agents-default-deny-egress
+  namespace: {{ .Values.namespaces.agents }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: agents
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # Cluster DNS. ONE list entry carrying BOTH selectors (AND) -- see the source file's "THE
+    # `to` ENTRY TRAP" before touching the indentation here; two entries would mean OR.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The Guardian's mediation surface (threat-model position P4: the agent layer must be able
+    # to reach it, "or it could not be mediated at all"). Namespace-selected, not pod-selected,
+    # matching the source file's reasoning.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.guardian }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.guardian.service.port }}
+---
+# HARDENING, NOT THE INVARIANT. Default-deny ingress, permitting only agent-to-agent traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agents-default-deny-ingress
+  namespace: {{ .Values.namespaces.agents }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: agents
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+---
+# THE INVARIANT, WRITTEN DOWN: egress to the Kubernetes API server, denied (or, under the
+# G2-SHAREDCRED arm, allowed) by name -- the only vocabulary that can name it under Cilium.
+#
+# values.yaml agents.networkPolicy.apiServerReach selects which spec renders: `closed` is
+# infra/netpol/agents-default-deny.yaml's egressDeny (the G0-FULL/G1-LOGONLY posture);
+# `open` is infra/netpol/agents-g2-open.yaml's egress allow (the G2-SHAREDCRED arm's one-object
+# delta). The object's apiVersion/kind/name/namespace/endpointSelector are identical either
+# way, matching the source files' own "same object, spec replaced" design -- helm upgrade with
+# a different value reproduces that `kubectl apply` replace.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: agents-kube-apiserver-boundary
+  namespace: {{ .Values.namespaces.agents }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: agents
+spec:
+  endpointSelector: {}
+{{- if eq .Values.agents.networkPolicy.apiServerReach "open" }}
+  egress:
+    - toEntities:
+        - kube-apiserver
+      # Two ports, not none -- see infra/netpol/agents-g2-open.yaml "WHY THE ALLOW NAMES
+      # PORTS": an entity selector with no toPorts would also open the kubelet on the same node
+      # address, a second removed property the ablation does not permit.
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "6443"
+              protocol: TCP
+{{- else }}
+  egressDeny:
+    - toEntities:
+        - kube-apiserver
+{{- end }}

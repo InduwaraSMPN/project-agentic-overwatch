@@ -1,0 +1,94 @@
+# infra/observability/kube-state-metrics-values.yaml -- Helm values for the standalone
+# kube-state-metrics (KSM) release, the source of the object-level Kubernetes series that cAdvisor
+# cannot produce.
+#
+# WHERE THE KEY NAMES COME FROM
+#   Chart: prometheus-community/kube-state-metrics, installed by infra/observability/install.sh at
+#   the version held by KUBE_STATE_METRICS_VERSION in infra/versions.env. Every key below was read
+#   out of the chart's own values.yaml at chart version 8.4.0 (app version 2.20.0), source
+#   https://github.com/prometheus-community/helm-charts/blob/kube-state-metrics-8.4.0/charts/kube-state-metrics/values.yaml
+#   -- names, nesting and upstream defaults are quoted from that file rather than remembered.
+#   Helm ignores a values key the chart does not define, so a mistyped key is not an error but a
+#   setting that silently never applies; that is why each key here is checked against the file and
+#   why the version it was checked against is recorded.
+#
+# WHY KSM IS A SEPARATE RELEASE RATHER THAN THE PROMETHEUS CHART'S SUBCHART
+#   Two reasons, and either alone would be sufficient. First, infra/versions.env holds a distinct
+#   KUBE_STATE_METRICS_VERSION key, and rule 2 of that file's header makes the key set an M0
+#   interface contract; a key can only be honestly populated by a chart that is actually installed
+#   at that version, and a subchart's version is chosen by its parent's dependency range
+#   (`version: 8.4.*` in the prometheus chart's Chart.yaml), not by us. Second, an installation
+#   that pins the parent but floats the child is not reproducible in the sense NFR1 asserts: two
+#   clean checkouts of the same commit, installed a month apart, would get different KSM builds.
+#   The prometheus chart's subchart is therefore switched off in prometheus-values.yaml, and this
+#   release stands on its own pin.
+#
+# WHY KSM IS REQUIRED, NOT DECORATIVE
+#   kube_pod_container_status_restarts_total is the source for the container-restart column that
+#   docs/protocols/data-management.md section 3 requires in resources.csv. That section reconciles
+#   two previously unhomed resource counters from the dissertation's per-run logging obligation,
+#   and it states the completeness rule plainly: a bundle whose resources.csv lacks the restart
+#   column, or whose column is unpopulated, does not seal. cAdvisor cannot supply that number --
+#   it reports what containers consume, not what the Kubernetes API says has happened to them, and
+#   a container that has already restarted leaves no cAdvisor evidence that it did. So KSM is on
+#   the path from "a run happened" to "a run bundle exists", and turning it off breaks M6's
+#   completeness check rather than merely thinning a dashboard.
+#
+# HOW PROMETHEUS FINDS THIS RELEASE
+#   Through the prometheus chart's shipped `kubernetes-service-endpoints` scrape job, which keeps
+#   only endpointslice targets whose Service carries prometheus.io/scrape: "true". This chart adds
+#   that annotation itself when prometheusScrape is true, so no extraScrapeConfigs entry and no
+#   hand-added annotation are needed, and adding either would create a duplicate target for the
+#   same endpoint. prometheus-values.yaml carries the full reasoning, including why that job's
+#   honor_labels: true is what keeps namespace="boutique" on the series instead of overwriting it
+#   with the namespace KSM runs in.
+#
+# MEMORY INTENT
+#   192Mi limit, 64Mi request. KSM holds a reflector cache of every object it collects, so its
+#   memory tracks cluster object count rather than traffic; on a one-node kind cluster carrying
+#   Boutique, Cilium, Falco and this namespace that cache is small and stable. The limit exists so
+#   that if a future milestone adds a large number of objects, KSM is killed and restarted rather
+#   than growing until the kubelet evicts a Boutique pod and corrupts the run being measured. See
+#   the memory-intent paragraph in prometheus-values.yaml for the namespace-wide budget.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Setting prometheusScrape to false makes the release invisible to Prometheus, which empties the
+#   restart column without any component reporting an error. Narrowing `collectors` so that `pods`
+#   is dropped removes the restart series specifically. Enabling selfMonitor adds a second scrape
+#   target for the same release.
+
+# Upstream default is `prometheusScrape: true` (values.yaml L2), restated here rather than left
+# implicit because it is the entire discovery mechanism: the chart's templates/service.yaml lines
+# 9-10 render `prometheus.io/scrape: 'true'` onto the Service only when this is true, and that
+# annotation is the single thing the Prometheus scrape job matches on. If an upstream bump ever
+# flipped the default, the failure would be silent -- a healthy KSM pod, a healthy Prometheus, and
+# an empty restart column. Stating it makes that bump a merge conflict instead.
+prometheusScrape: true
+
+# Upstream default is `enabled: false` (values.yaml L531), restated for the same reason but the
+# opposite way round: it must stay off. selfMonitor adds a second port named `metrics` to the same
+# Service (templates/service.yaml, the block guarded by selfMonitor.enabled), and because the
+# Prometheus job selects on a Service-level annotation it would scrape both ports, producing a
+# second target for one release. That second target serves KSM's own process telemetry, not the
+# Kubernetes object series, so it adds no measurement and one more thing to explain.
+selfMonitor:
+  enabled: false
+
+# Upstream default is `resources: {}` (values.yaml L515): no requests, no limits. See MEMORY
+# INTENT above. As in prometheus-values.yaml there is a CPU request and no CPU limit, so the
+# collector cannot be CFS-throttled into late scrapes that would read as gaps in resources.csv.
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 192Mi
+
+# The chart's `collectors` list (values.yaml L430) and the collectorsExclude/collectorsExtra keys
+# that layer onto it are deliberately left at their defaults, which enable every resource kind KSM
+# knows about. Trimming them would save a small amount of memory that the limit above already
+# bounds, and would buy that saving with a real risk: a later milestone querying a series this
+# file happened to exclude gets an empty result rather than an error, and an empty result in this
+# project's data path is a column that fails a completeness check for a reason nobody can see from
+# the failure. The one entry that must survive any future trim is `pods`, which is what produces
+# kube_pod_container_status_restarts_total.

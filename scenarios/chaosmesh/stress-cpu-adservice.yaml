@@ -1,0 +1,91 @@
+# scenarios/chaosmesh/stress-cpu-adservice.yaml -- one fault primitive, one file. This is the
+# resource-contention primitive SCN-CVE-04 uses: it runs CPU burners inside an adservice pod, so the
+# service stays up and reachable and simply cannot keep up.
+#
+# WHY THIS IS THE ONLY CPU-SATURATION PRIMITIVE IN THE CORPUS (M10 WS-2, D7)
+#   ADR-079 gave SCN-CVE-04 a productcatalogservice-targeted CPU regression by pointing it at a
+#   productcatalogservice StressChaos file that SCN-SIM-03 also used, and ADR-091 retargeted the
+#   scenario to adservice. When the corpus was audited for orphan CRDs (plan section 1, V27) the
+#   productcatalogservice file turned out to be referenced by no manifest at all: ADR-091 had
+#   retargeted both of its users, so what remained was a primitive nothing composed -- dead text
+#   describing a degradation no run could contain and no ground truth could be scored against. It is
+#   deleted rather than wired in, because "wire it in" would mean inventing a scenario to justify a
+#   file rather than the other way round, and D7 records that decision. This file therefore carries
+#   the whole CPU-saturation role on its own, and the directory convention it states -- "a new
+#   primitive file with a new metadata.name, never an edit in place" for a different fault, and a
+#   different target workload is the sharper version of that rule -- is what a future
+#   productcatalogservice regression would follow.
+#
+# WHAT THIS PERTURBS
+#   CPU available to one adservice pod. No pod is deleted, no container restarts, no packet is
+#   delayed or dropped, and every probe the control plane runs keeps succeeding -- the pod is Ready
+#   throughout. adservice's own gRPC listener stays up; what degrades is throughput, and the
+#   degradation propagates to the frontend's home and product pages, both of which call
+#   AdService.GetAds synchronously while rendering.
+#
+# WHICH SCENARIO USES IT
+#   SCN-CVE-04, standing in for the CPU regression a rebuilt image can plausibly carry (a different
+#   JVM/GC configuration, a debug build, an unoptimised dependency graph) -- a property of the
+#   ADMITTED BUILD, not of an attacker, which is what keeps this scenario pre-exploitation while still
+#   giving verified recovery something to verify once eradication rolls the Deployment back onto the
+#   patched digest.
+#
+# SCOPED TO THE boutique NAMESPACE, AND THAT IS A HARD RULE
+#   metadata.namespace is boutique and the selector carries namespaces: [boutique] as its own block,
+#   because kind runs the whole cluster inside one Docker container on one host: an escaped stressor
+#   would slow the instrument doing the measuring rather than only the system under test, and the
+#   measured degradation would then be partly the framework's own with nothing in the run bundle
+#   recording which part. The selector is what actually decides which pods are eligible, so the
+#   bound is written there and not left to metadata.namespace to imply.
+#
+# mode: one, NOT mode: all
+#   One pod, chosen by the label selector. adservice runs three replicas under this redesign (ADR-091;
+#   infra/boutique/kustomization.yaml needs the corresponding `replicas: adservice count: 3` entry --
+#   see ADR-091's Integration section, since that file is outside this stream's ownership), so `all`
+#   would be a whole-service brownout rather than the single-pod contention the ground truth
+#   describes, on a cluster where every service shares the one host's CPUs.
+#
+# THERE IS NO containerNames BLOCK, AND THAT IS DELIBERATE
+#   StressChaos applies to the pod's containers when none is named. adservice's Deployment runs one
+#   container (`server`) and no injected sidecar, so an unqualified stressor is unambiguous here.
+#
+# THERE IS NO duration FIELD AND NO scheduler, AND THAT IS A DECISION
+#   Lifetime belongs to the applier: a `duration` here would put a second, wall-clock-shaped timeline
+#   beside the injection plan's logical one, which would make (scenario_id, seed) replay
+#   non-reproducible. Without a duration this StressChaos burns until the applier deletes it at
+#   teardown.
+#
+# WHY workers AND load ARE FAULT PARAMETERS AND NOT PROTOCOL CONSTANTS
+#   They are the fault, not a criterion any measured value is compared against --
+#   .agents/rules/00-source-of-truth.md's test for what evaluation-protocol.md owns and what a
+#   scenario primitive owns. The values below (two workers, eighty percent duty) are the ones the
+#   deleted productcatalogservice primitive used, carried over unchanged: the same degradation shape
+#   is wanted here on a different workload, and there is no reason for the CPU-saturation behaviour
+#   of this corpus to differ by workload.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   SCN-CVE-04's ground truth asserts detection, containment, eradication and verified recovery
+#   against a cluster in which adservice is contended by THIS much. A different contention level is a
+#   new primitive file with a new metadata.name, referenced from the manifest's `primitives` list --
+#   never an edit in place.
+#
+# THE FORMAT IS DELIBERATELY SMALLER THAN YAML
+#   Block style only: no flow collections, no anchors or aliases, no tags, no multi-document files,
+#   no tabs. scenarios/schemas/yamlsubset.py is the offline reader these files are validated
+#   against, and it refuses everything outside that subset by design.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: stress-cpu-adservice
+  namespace: boutique
+spec:
+  mode: one
+  selector:
+    namespaces:
+      - boutique
+    labelSelectors:
+      app: adservice
+  stressors:
+    cpu:
+      workers: 2
+      load: 80

@@ -1,0 +1,96 @@
+# scenarios/chaosmesh/container-kill-cartservice.yaml -- one fault primitive, one file. This is the
+# in-place restart primitive: it kills the application container inside a cartservice pod while
+# leaving the pod object, its IP, its volumes and its sandbox alone.
+#
+# WHAT THIS PERTURBS
+#   One container, inside one surviving pod. The kubelet restarts it, so the pod's restartCount
+#   increments and its Ready condition flips and returns without the Deployment ever seeing a
+#   missing replica. That is a genuinely different observable from the sibling primitive
+#   pod-kill-checkoutservice.yaml, which deletes the pod: there the replica set changes, here it
+#   does not. Two primitives rather than one because a containment step that drains a node or
+#   cordons a pod is correct for the first and useless for the second, and a scenario suite that
+#   could not tell them apart would score both the same.
+#
+# WHICH SCENARIO USES IT
+#   SCN-SIM-01, as the perturbation the incident is staged against. That scenario's first signal is
+#   Falco -- a shell executed inside the cartservice container followed by an outbound beacon -- and
+#   the restart is what makes the container a moving target rather than a static one: an eradication
+#   step that merely killed the attacker's process, without addressing why the container comes back
+#   the same, is the failure mode the phase is scored on. cartservice is the target because it is
+#   the one Boutique service holding session state, in redis-cart, so its restart has a consequence
+#   the verified-recovery phase can assert against rather than being invisible.
+#
+# SCOPED TO THE boutique NAMESPACE, AND THAT IS A HARD RULE
+#   metadata.namespace is boutique and the selector carries namespaces: [boutique] as its own block,
+#   for the reason pod-kill-checkoutservice.yaml states at length: the agents, the Guardian, the
+#   Monitor and the trace plane all run outside boutique, and a fault that can escape the target
+#   namespace perturbs the framework it is meant to be measured against. The selector is what
+#   actually decides which pods are eligible, so the bound is written there and not left to
+#   metadata.namespace to imply.
+#
+# mode: one, NOT mode: all
+#   One pod, chosen by the label selector, and within it exactly the containers containerNames
+#   lists. `all` would restart every cartservice replica at once, which is a service outage and not
+#   the single-container fault the ground truth describes. cartservice runs three replicas
+#   (ADR-061), so the two no longer coincide. They never meant the same thing: the equivalence held
+#   only while the Deployment ran one replica and was an accident of that count rather than a
+#   property this file relied on, which is why ADR-061 left the arity below untouched. What the
+#   multi-replica count does change is WHICH pod `mode: one` selects: from ADR-061 onward that
+#   choice is Chaos Mesh's rather than the plan's, and the plan's `target.replica_index` reaches
+#   this primitive only through the applier's own sorted-name selection. That residual is recorded
+#   here rather than resolved, because resolving it would mean giving Chaos Mesh the plan's
+#   identifier, which is a change to how the fault is selected rather than to how it is described.
+#
+# containerNames NAMES A CONTRACT WITH THE DEPLOYMENT, AND IT IS RE-CHECKED AT TIER B
+#   container-kill has no default target: Chaos Mesh needs to be told which container to kill. The
+#   Boutique release pinned by BOUTIQUE_MANIFEST_REF names the application container in each service
+#   Deployment `server`, which is the value below. A mismatch here is loud rather than silent --
+#   Chaos Mesh fails the experiment with a container-not-found error rather than killing something
+#   else -- but it is still a Tier B failure discovered late, so applying this CRD against the live
+#   cluster and confirming the name is part of Tier B1 rather than something this file asserts
+#   offline. Nothing offline can tell a stale container name from a current one.
+#
+# THERE IS NO duration FIELD AND NO scheduler, AND THAT IS A DECISION
+#   Lifetime belongs to the applier: the injection plan owns when things happen, as logical offsets
+#   in integer milliseconds from t0, and the teardown owns when they stop. A `duration` here would
+#   put a second, wall-clock-shaped timeline beside the plan's logical one, and two timelines that
+#   can disagree make (scenario_id, seed) replay non-reproducible -- the property T-17 rests on.
+#   infra/locust/profiles.yaml lines 28-41 refuse a `duration` key in the load registry on the same
+#   ground, that how long something runs is a property of the run rather than of the shape, and the
+#   argument carries over without change. A `scheduler:`/cron block is refused more firmly still,
+#   because it would put the wall clock inside the fault itself.
+#
+# NO SEED, NO RUN COUNT, NO THRESHOLD, NO LATENCY BUDGET
+#   None appears in this file and none may. .agents/rules/00-source-of-truth.md single-homes every
+#   quantitative experiment parameter in docs/protocols/evaluation-protocol.md, and this directory
+#   describes fault shapes only. This particular primitive happens to carry no numeric parameter at
+#   all, which makes the rule easy to keep here and is stated anyway, because the rule belongs to
+#   the directory rather than to the file that finds it convenient.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   SCN-SIM-01's ground truth asserts a detection, a containment, an eradication and a verified
+#   recovery against THIS perturbation. Retargeting the label selector, widening the mode or naming
+#   a different container redefines what every already-sealed bundle carrying that scenario_id was
+#   measured under, while the identifier keeps saying the same thing. A different fault is a new
+#   file with a new metadata.name, added to the manifest's `primitives` list -- never an edit in
+#   place.
+#
+# THE FORMAT IS DELIBERATELY SMALLER THAN YAML
+#   Block style only: no flow collections, no anchors or aliases, no tags, no multi-document files,
+#   no tabs. scenarios/schemas/yamlsubset.py is the offline reader these files are validated
+#   against, and it refuses everything outside that subset by design.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: container-kill-cartservice
+  namespace: boutique
+spec:
+  action: container-kill
+  mode: one
+  selector:
+    namespaces:
+      - boutique
+    labelSelectors:
+      app: cartservice
+  containerNames:
+    - server

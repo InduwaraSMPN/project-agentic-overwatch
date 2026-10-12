@@ -1,0 +1,83 @@
+# infra/probes/deploy/namespace.yaml -- the namespace the in-cluster SLO probe pod runs in.
+# Supervisor ruling B3 (13 Sep 2026, "An SLO describes the Service ... Probe the Service by cluster
+# DNS from a probe pod inside the cluster, with no port-forward on the measurement path"); ADR-085;
+# row T-21.
+#
+# WHY A DEDICATED NAMESPACE, AND WHY NOT `boutique`, `agents` OR `netpol-probe`
+#   A Kubernetes NetworkPolicy's podSelector only ever matches pods in the SAME namespace as the
+#   policy object itself
+#   (https://kubernetes.io/docs/concepts/services-networking/network-policies/: "podSelector ...
+#   selects particular Pods in the same namespace as the NetworkPolicy"). infra/netpol/
+#   agents-default-deny.yaml and infra/netpol/agents-g2-open.yaml select only `agents`; the
+#   Guardian's containment NetworkPolicy is always created inside `boutique`, against the
+#   compromised workload's own pods (supervisor ruling B2; ADR-081). A probe pod placed in a THIRD,
+#   dedicated namespace therefore cannot be selected by any of those objects, by construction --
+#   there is no rule to misconfigure, add or forget, because none of them can ever name a namespace
+#   they do not select. This is the same reasoning infra/netpol/probe/namespace.yaml already gives
+#   for its own throwaway namespace ("no policy written here can affect Online Boutique, the
+#   observability stack or kube-system"), applied to keep the SLO probe out of everyone else's
+#   reach rather than the other way round.
+#
+#   `netpol-probe` already exists, but it is scripts/netpol_proof.sh's own one-shot enforcement
+#   fixture: its lifecycle is "applied if absent, deleted on exit only if this script created it"
+#   (infra/netpol/probe/namespace.yaml), a namespace-scoped default-deny policy is applied and
+#   removed inside it repeatedly, and nothing here should share that churn. `boutique` is the
+#   system under test and `agents` is the threat model's own attacker-adjacent namespace; probing
+#   from either would put the measurement instrument inside the thing it measures.
+#
+# WHAT DELIBERATELY IS NOT HERE
+#   No NetworkPolicy. The probe pod is measurement apparatus in exactly the sense
+#   infra/collectors/resource_collector.py's `platform` series already is for Prometheus, Locust and
+#   kube-state-metrics: it holds no credential, mediates nothing, and is never itself a target this
+#   project's threat model tracks, so a boundary here would add review surface without closing any
+#   threat-model position. `slo-probe` is not listed in that module's NAMESPACE_SERIES table --
+#   infra/collectors/resource_collector.py is outside this stream's owned files -- so it falls to
+#   the table's own conservative default, `platform`, loudly (once) rather than silently; see
+#   runner/live_baseline.py's module docstring for why that default is sufficient and what the
+#   follow-up would be.
+#
+# LIFECYCLE
+#   Applied once, by hand, before the first live run or live baseline that uses the in-cluster probe
+#   path -- see ADR-085's deployment steps. Not created or removed by the runner: only the
+#   per-attempt Pod in infra/probes/deploy/pod.yaml has a per-run lifecycle, exactly as `guardian`
+#   (guardian/deploy/rbac.yaml) and `agents` (infra/netpol/agents-default-deny.yaml) are each applied
+#   once while the workloads inside them come and go per run.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Renaming the namespace must move in the same commit as PROBE_NAMESPACE in
+#   runner/live_baseline.py and the `namespace:` field of infra/probes/deploy/pod.yaml. Adding a
+#   NetworkPolicy that restricts egress would have to explicitly admit the frontend Service in
+#   `boutique` and cluster DNS, or the probe would start reporting the policy as an outage.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: slo-probe
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: slo-probe
+    # Baseline, not restricted: this pod needs no host namespace, no privileged mode and nothing
+    # `restricted` would additionally forbid beyond what infra/probes/deploy/pod.yaml's own
+    # container spec already avoids, so `warn`/`audit` report the gap without blocking the first
+    # apply -- the same reasoning guardian/deploy/rbac.yaml and infra/netpol/agents-default-deny.yaml
+    # give for the `guardian` and `agents` namespaces.
+    #
+    # No enforce-version label: the Kubernetes minor the profile is evaluated against is a property
+    # of KIND_NODE_IMAGE in infra/versions.env, which owns it.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+# The namespace's default ServiceAccount, with token automounting turned OFF -- the same object
+# infra/netpol/agents-default-deny.yaml creates for `agents`, and for the identical reason: nothing
+# under infra/probes/ opens a Kubernetes client or reads a ServiceAccount token, so a mounted token
+# would be a needless capability sitting unused in a pod that already makes only outbound HTTP
+# requests to one Service.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: slo-probe
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: slo-probe
+automountServiceAccountToken: false

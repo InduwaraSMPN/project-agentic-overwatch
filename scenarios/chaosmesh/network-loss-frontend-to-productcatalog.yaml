@@ -1,0 +1,76 @@
+# scenarios/chaosmesh/network-loss-frontend-to-productcatalog.yaml -- one fault primitive, one file.
+# The partial-connectivity primitive SCN-SIM-02 composes: it drops a fraction of the packets frontend
+# sends to productcatalogservice, so the storefront path is degraded rather than broken, and leaves
+# every other path in the namespace alone.
+#
+# WHY NETWORKCHAOS AND NOT THE HTTP-ABORT PRIMITIVE ADR-034 EVALUATED
+#   SCN-SIM-02 needs a user-visible symptom beside its control-plane incident (a namespaced
+#   RoleBinding escalation), so the catalog path has to degrade in a way a probe can see. An
+#   HTTPChaos object aborting matching requests was authored for that purpose and then removed: it
+#   cannot inject on this host's iptables-legacy versus nf_tables combination (ADR-034), and it was
+#   itself one of the three orphan CRDs the M10 audit deleted (plan section 1, V27; D7) -- nothing
+#   composed it by then. The deterministic NetworkChaos loss shape stands in its place, which is
+#   why this file exists rather than the object it replaced.
+#
+# WHY A NEW FILE, RATHER THAN REPOINTING network-loss-frontend-to-cart.yaml
+#   The two loss primitives differ only in their target edge, and the directory's stated convention
+#   -- "a different degradation is a new primitive file with a new metadata.name, never an edit in
+#   place" -- applies at least as strongly to a change of TARGET EDGE as to a change of loss
+#   percentage. Retargeting the cart edge would silently change SCN-SIM-01's fault surface, and the
+#   two scenarios read their recoveries from different probes.
+#
+# SCOPED TO THE boutique NAMESPACE ON BOTH SIDES, AND THAT IS A HARD RULE
+#   metadata.namespace is boutique, and both selectors carry namespaces: [boutique] as their own
+#   block. A loss rule that escaped boutique would drop the Monitor's, the Guardian's or the trace
+#   plane's own traffic, and a detection missed because the evidence packet was dropped is
+#   indistinguishable in a run bundle from a detection missed because the agent failed. Both
+#   selectors are bounded because both decide.
+#
+# WHY loss AND correlation ARE FAULT PARAMETERS AND NOT PROTOCOL CONSTANTS
+#   The injected loss is the independent variable the fault IS, not a budget any measured value is
+#   compared against; docs/protocols/evaluation-protocol.md owns budgets and this directory never
+#   restates one. `correlation: "0"` is the determinism requirement, not a tuning choice: a non-zero
+#   value makes each packet's loss depend on the previous packet's, an unseeded stochastic process
+#   .agents/rules/20-parity-and-determinism.md forbids on a scenario path.
+#
+# THERE IS NO duration FIELD AND NO scheduler, AND THAT IS A DECISION
+#   Lifetime belongs to the applier: the injection plan owns when things happen as logical offsets
+#   in integer milliseconds from t0, and the teardown owns when they stop. A `duration` here would
+#   put a second, wall-clock-shaped timeline beside the plan's logical one, and two timelines that
+#   can disagree make (scenario_id, seed) replay non-reproducible. This NetworkChaos runs until the
+#   applier deletes it.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   SCN-SIM-02's ground truth asserts detection, containment, eradication and verified recovery
+#   against THIS perturbation on THIS path with THIS loss. A different degradation is a new
+#   primitive file with a new metadata.name, referenced from the manifest's `incident_primitives`
+#   list -- never an edit in place.
+#
+# THE FORMAT IS DELIBERATELY SMALLER THAN YAML
+#   Block style only: no flow collections, no anchors or aliases, no tags, no multi-document files,
+#   no tabs -- the subset scenarios/schemas/yamlsubset.py accepts, because that is the reader the
+#   applier reads it with.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-loss-frontend-to-productcatalog
+  namespace: boutique
+spec:
+  action: loss
+  mode: one
+  selector:
+    namespaces:
+      - boutique
+    labelSelectors:
+      app: frontend
+  direction: to
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - boutique
+      labelSelectors:
+        app: productcatalogservice
+  loss:
+    loss: "25"
+    correlation: "0"

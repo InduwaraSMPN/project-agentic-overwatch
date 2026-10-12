@@ -1,0 +1,346 @@
+{
+  "campaign_id": "CAMP-20261005-coverage-p3",
+  "seeds": [
+    902
+  ],
+  "load_profiles": [
+    "LOAD-STEADY"
+  ],
+  "runs": [
+    {
+      "run_id": "RUN-S2-FLAT-SCN-CVE-05-INJ-NONE-902",
+      "condition": "S2-FLAT",
+      "scenario_id": "SCN-CVE-05",
+      "injection_condition": "INJ-NONE",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-S3-SINGLE-SCN-CVE-05-INJ-NONE-902",
+      "condition": "S3-SINGLE",
+      "scenario_id": "SCN-CVE-05",
+      "injection_condition": "INJ-NONE",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G1-LOGONLY-SCN-CVE-05-INJ-NONE-902",
+      "condition": "G1-LOGONLY",
+      "scenario_id": "SCN-CVE-05",
+      "injection_condition": "INJ-NONE",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G2-SHAREDCRED-SCN-CVE-05-INJ-NONE-902",
+      "condition": "G2-SHAREDCRED",
+      "scenario_id": "SCN-CVE-05",
+      "injection_condition": "INJ-NONE",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G3-UNQUOTED-SCN-CVE-05-INJ-NONE-902",
+      "condition": "G3-UNQUOTED",
+      "scenario_id": "SCN-CVE-05",
+      "injection_condition": "INJ-NONE",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-S2-FLAT-SCN-SIM-01-INJ-A-902",
+      "condition": "S2-FLAT",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-A",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G1-LOGONLY-SCN-SIM-01-INJ-A-902",
+      "condition": "G1-LOGONLY",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-A",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G3-UNQUOTED-SCN-SIM-01-INJ-A-902",
+      "condition": "G3-UNQUOTED",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-A",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G0-FULL-SCN-CVE-05-INJ-NONE-902",
+      "condition": "G0-FULL",
+      "scenario_id": "SCN-CVE-05",
+      "injection_condition": "INJ-NONE",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": "BASE-LOAD-STEADY-902",
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-S3-SINGLE-SCN-SIM-01-INJ-A-902",
+      "condition": "S3-SINGLE",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-A",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G3-UNQUOTED-SCN-SIM-02-INJ-B-902",
+      "condition": "G3-UNQUOTED",
+      "scenario_id": "SCN-SIM-02",
+      "injection_condition": "INJ-B",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-S3-SINGLE-SCN-SIM-02-INJ-B-902",
+      "condition": "S3-SINGLE",
+      "scenario_id": "SCN-SIM-02",
+      "injection_condition": "INJ-B",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G2-SHAREDCRED-SCN-SIM-01-INJ-A-902",
+      "condition": "G2-SHAREDCRED",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-A",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-S2-FLAT-SCN-SIM-02-INJ-B-902",
+      "condition": "S2-FLAT",
+      "scenario_id": "SCN-SIM-02",
+      "injection_condition": "INJ-B",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G2-SHAREDCRED-SCN-SIM-02-INJ-B-902",
+      "condition": "G2-SHAREDCRED",
+      "scenario_id": "SCN-SIM-02",
+      "injection_condition": "INJ-B",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G0-FULL-SCN-SIM-01-INJ-A-902",
+      "condition": "G0-FULL",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-A",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": "BASE-LOAD-STEADY-902",
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G1-LOGONLY-SCN-SIM-02-INJ-B-902",
+      "condition": "G1-LOGONLY",
+      "scenario_id": "SCN-SIM-02",
+      "injection_condition": "INJ-B",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-S2-FLAT-SCN-SIM-03-INJ-C-902",
+      "condition": "S2-FLAT",
+      "scenario_id": "SCN-SIM-03",
+      "injection_condition": "INJ-C",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G3-UNQUOTED-SCN-SIM-03-INJ-C-902",
+      "condition": "G3-UNQUOTED",
+      "scenario_id": "SCN-SIM-03",
+      "injection_condition": "INJ-C",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G1-LOGONLY-SCN-SIM-03-INJ-C-902",
+      "condition": "G1-LOGONLY",
+      "scenario_id": "SCN-SIM-03",
+      "injection_condition": "INJ-C",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G0-FULL-SCN-SIM-02-INJ-B-902",
+      "condition": "G0-FULL",
+      "scenario_id": "SCN-SIM-02",
+      "injection_condition": "INJ-B",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": "BASE-LOAD-STEADY-902",
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G2-SHAREDCRED-SCN-SIM-03-INJ-C-902",
+      "condition": "G2-SHAREDCRED",
+      "scenario_id": "SCN-SIM-03",
+      "injection_condition": "INJ-C",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-S3-SINGLE-SCN-SIM-03-INJ-C-902",
+      "condition": "S3-SINGLE",
+      "scenario_id": "SCN-SIM-03",
+      "injection_condition": "INJ-C",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G0-FULL-SCN-SIM-03-INJ-C-902",
+      "condition": "G0-FULL",
+      "scenario_id": "SCN-SIM-03",
+      "injection_condition": "INJ-C",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": "BASE-LOAD-STEADY-902",
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G3-UNQUOTED-SCN-CVE-04-INJ-D-902",
+      "condition": "G3-UNQUOTED",
+      "scenario_id": "SCN-CVE-04",
+      "injection_condition": "INJ-D",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G2-SHAREDCRED-SCN-CVE-04-INJ-D-902",
+      "condition": "G2-SHAREDCRED",
+      "scenario_id": "SCN-CVE-04",
+      "injection_condition": "INJ-D",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G1-LOGONLY-SCN-CVE-04-INJ-D-902",
+      "condition": "G1-LOGONLY",
+      "scenario_id": "SCN-CVE-04",
+      "injection_condition": "INJ-D",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-S3-SINGLE-SCN-CVE-04-INJ-D-902",
+      "condition": "S3-SINGLE",
+      "scenario_id": "SCN-CVE-04",
+      "injection_condition": "INJ-D",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-S2-FLAT-SCN-CVE-04-INJ-D-902",
+      "condition": "S2-FLAT",
+      "scenario_id": "SCN-CVE-04",
+      "injection_condition": "INJ-D",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G0-FULL-SCN-CVE-04-INJ-D-902",
+      "condition": "G0-FULL",
+      "scenario_id": "SCN-CVE-04",
+      "injection_condition": "INJ-D",
+      "seed": 902,
+      "is_baseline": false,
+      "baseline_run_id": "BASE-LOAD-STEADY-902",
+      "load_profile_id": "LOAD-STEADY"
+    }
+  ],
+  "campaign_seed": 0,
+  "generated_order": [
+    "RUN-S2-FLAT-SCN-CVE-05-INJ-NONE-902",
+    "RUN-S3-SINGLE-SCN-CVE-05-INJ-NONE-902",
+    "RUN-G1-LOGONLY-SCN-CVE-05-INJ-NONE-902",
+    "RUN-G2-SHAREDCRED-SCN-CVE-05-INJ-NONE-902",
+    "RUN-G3-UNQUOTED-SCN-CVE-05-INJ-NONE-902",
+    "RUN-S2-FLAT-SCN-SIM-01-INJ-A-902",
+    "RUN-G1-LOGONLY-SCN-SIM-01-INJ-A-902",
+    "RUN-G3-UNQUOTED-SCN-SIM-01-INJ-A-902",
+    "RUN-G0-FULL-SCN-CVE-05-INJ-NONE-902",
+    "RUN-S3-SINGLE-SCN-SIM-01-INJ-A-902",
+    "RUN-G3-UNQUOTED-SCN-SIM-02-INJ-B-902",
+    "RUN-S3-SINGLE-SCN-SIM-02-INJ-B-902",
+    "RUN-G2-SHAREDCRED-SCN-SIM-01-INJ-A-902",
+    "RUN-S2-FLAT-SCN-SIM-02-INJ-B-902",
+    "RUN-G2-SHAREDCRED-SCN-SIM-02-INJ-B-902",
+    "RUN-G0-FULL-SCN-SIM-01-INJ-A-902",
+    "RUN-G1-LOGONLY-SCN-SIM-02-INJ-B-902",
+    "RUN-S2-FLAT-SCN-SIM-03-INJ-C-902",
+    "RUN-G3-UNQUOTED-SCN-SIM-03-INJ-C-902",
+    "RUN-G1-LOGONLY-SCN-SIM-03-INJ-C-902",
+    "RUN-G0-FULL-SCN-SIM-02-INJ-B-902",
+    "RUN-G2-SHAREDCRED-SCN-SIM-03-INJ-C-902",
+    "RUN-S3-SINGLE-SCN-SIM-03-INJ-C-902",
+    "RUN-G0-FULL-SCN-SIM-03-INJ-C-902",
+    "RUN-G3-UNQUOTED-SCN-CVE-04-INJ-D-902",
+    "RUN-G2-SHAREDCRED-SCN-CVE-04-INJ-D-902",
+    "RUN-G1-LOGONLY-SCN-CVE-04-INJ-D-902",
+    "RUN-S3-SINGLE-SCN-CVE-04-INJ-D-902",
+    "RUN-S2-FLAT-SCN-CVE-04-INJ-D-902",
+    "RUN-G0-FULL-SCN-CVE-04-INJ-D-902"
+  ],
+  "versions_env_sha256": "44559a624486eddb714ff70c05f58568bbe42c7c20738043a1c6e35a8add20e4",
+  "freeze_tag": "v2-pilot-20261005c"
+}

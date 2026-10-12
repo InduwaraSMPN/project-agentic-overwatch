@@ -1,0 +1,123 @@
+# Self-scan: SBOM + Trivy vulnerability scan of OUR OWN container images. M8-T8.4
+# (docs/milestones/M8-hardening.md); design record: docs/adr/ADR-115-sbom-and-self-scan.md;
+# operator-facing detail: docs/ops/sbom.md.
+#
+# ALL LOGIC LIVES IN scripts/self_scan.sh, PER docs/04-repo-conventions.md SECTION 1
+#   This workflow only checks out the repository and invokes the script. Every other workflow in
+#   this repository holds to the same rule ("no check logic lives in the workflow file, so a red
+#   check reproduces locally with one command"), and there is no reason for a supply-chain gate to
+#   be the exception: `sh scripts/self_scan.sh` on a laptop with Docker and network access is the
+#   same command this job runs.
+#
+# WHY THIS IS A SEPARATE, PATH-FILTERED WORKFLOW AND NOT A FIFTH ci.yml JOB
+#   docs/04-repo-conventions.md section 4 fixes ci.yml at four named jobs and states without
+#   qualification that "a gated check is always a step, never a job" -- because a job whose `if`
+#   is false still shows up on every pull request as a permanently-skipped entry, which is exactly
+#   the noise the four-job shape exists to avoid. But the step-inside-an-existing-job alternative
+#   that rule prescribes is wrong here for the same reason ADR-017 already gave for
+#   env-bringup.yml: a step has no path filter of its own, so an unrelated documentation-only pull
+#   request would pay for a full image build plus two Trivy passes to learn nothing about them.
+#   Building three images and scanning each one is minutes of work, not seconds -- ADR-017's own
+#   argument against putting a slow, narrowly-relevant check in the always-on list. A separate,
+#   path-filtered workflow is the shape that is neither permanent noise nor a permanent tax: it is
+#   simply absent from the check list when the image-affecting surface is untouched, and it runs,
+#   and can go red, in exactly the pull request that changed one of the three Dockerfiles or the
+#   pins that feed them.
+#
+# THE WEEKLY SCHEDULE IS THE POINT OF THIS WORKFLOW, NOT DECORATION
+#   A self-scan answers a question about the WORLD (has a new CVE landed against a package already
+#   baked into one of our images), not about the diff under review. An image nobody has touched in
+#   months can acquire a new CRITICAL finding with no commit of ours responsible, exactly the
+#   argument env-bringup.yml's own header already makes for its own weekly run. Deliberately off
+#   the hour: scheduled workflows across GitHub queue heavily at :00, and a run that starts late is
+#   indistinguishable in a log from one that ran slowly.
+#
+# NOT A REQUIRED BRANCH-PROTECTION STATUS CHECK -- same operational warning env-bringup.yml and
+# docs-site.yml both carry. A required check belonging to a path-filtered workflow is reported as
+# permanently pending on every pull request the filter does not match, and a pending required
+# check blocks the merge -- so requiring this would block every change that never touches an image
+# surface, and the failure would read as a stuck queue rather than as a misconfiguration. ci.yml's
+# four jobs remain the required set; this workflow is evidence, gathered where it is cheap to
+# gather, exactly as env-bringup.yml already states for itself.
+#
+# ACTIONS POLICY
+#   actions/checkout and actions/upload-artifact are the only actions used, both first-party.
+#   Docker and Python 3 are preinstalled on ubuntu-latest; scripts/self_scan.sh acquires and
+#   checksum-verifies its own pinned Trivy binary (see that script's own header), the same
+#   self-contained-acquisition shape scripts/guardian_test.sh already uses for OPA -- so nothing
+#   here installs third-party code with the repository token beyond what the script itself fetches
+#   and verifies.
+#
+# WHY THE PATHS FILTER NAMES THESE FILES
+#   Kept in step with what scripts/self_scan.sh actually reads and builds from: the three
+#   Dockerfiles, the application code each COPYs into its image, infra/versions.env (every build
+#   arg is a pin read from it), and the script and this workflow file themselves. A change under
+#   guardian/app/, monitor/aggregator/ or infra/probes/ changes what ships in the corresponding
+#   image without necessarily touching its Dockerfile, so those trees are in the filter too.
+
+name: Self-scan (SBOM + Trivy)
+
+on:
+  pull_request:
+    paths:
+      - 'monitor/Dockerfile'
+      - 'monitor/aggregator/**'
+      - 'guardian/deploy/Dockerfile'
+      - 'guardian/app/**'
+      - 'infra/probes/deploy/Dockerfile'
+      - 'infra/probes/**'
+      - 'infra/versions.env'
+      - 'scripts/self_scan.sh'
+      - '.github/workflows/self-scan.yml'
+  # On-demand, from any branch -- how the first evidence run is produced, and how a check gone
+  # red for an environmental reason (a registry timeout, a transient DNS failure) is re-run
+  # without manufacturing a commit.
+  workflow_dispatch:
+  # Weekly, deliberately off the hour, default branch only (schedule always runs against the
+  # repository's default branch regardless of what triggered the workflow file's own history).
+  # See the header: an unchanged image still acquires new CVEs.
+  schedule:
+    - cron: '17 5 * * 3'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  self-scan:
+    runs-on: ubuntu-latest
+    # A cold run builds three images from scratch and runs Trivy's vulnerability-DB download
+    # plus two passes (full report, gate) per image. Generous rather than tight, for the same
+    # reason env-bringup.yml's own timeout is generous: a timeout firing mid-pull reports a red
+    # check for a slow network, which is the one failure mode this workflow must not manufacture.
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: SBOM + Trivy self-scan
+        # Delegates entirely to the script; see this file's header. Non-zero on a CRITICAL (or
+        # whatever SELF_SCAN_FAIL_SEVERITY is set to) finding that no ignore-file entry accepts,
+        # which fails this step and the job -- the CI gate docs/ops/sbom.md documents.
+        # SELF_SCAN_TRIVYIGNORE points at the tracked, reviewed residual-findings file
+        # (docs/ops/sbom.md section 6). The full unsuppressed report is written regardless; this
+        # only affects the gate decision, and every accepted entry carries its own `expires` date
+        # after which Trivy itself re-fails it. Remove this env to run with no suppression at all.
+        env:
+          SELF_SCAN_TRIVYIGNORE: .trivyignore.yaml
+        run: sh scripts/self_scan.sh
+
+      - name: Upload SBOM and scan reports
+        # Always, so a FAILing gate still leaves the per-image SBOM, full report and gate
+        # transcript attached to the run for inspection -- the reports are the useful output of a
+        # red run, not only of a green one.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: self-scan-reports
+          path: self-scan-out/
+          if-no-files-found: warn
+          retention-days: 90

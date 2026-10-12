@@ -1,0 +1,109 @@
+# Templated from monitor/deploy/deployment.yaml. Same init container (ADR-062: hands the
+# shared hostPath evidence tree to the aggregator's non-root uid) and the same security
+# context; only the image reference, namespace, replica count, evidence path and the
+# control-plane pin are parameterized.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evidence-aggregator
+  namespace: {{ .Values.namespaces.monitor }}
+  labels: &labels
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/name: evidence-aggregator
+    app.kubernetes.io/component: monitor
+spec:
+  replicas: {{ .Values.monitor.aggregator.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: evidence-aggregator
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      automountServiceAccountToken: false
+      {{- if .Values.monitor.evidence.pinToControlPlane }}
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: prepare-evidence-dir
+          image: {{ if .Values.monitor.image.digest }}{{ printf "%s@%s" .Values.monitor.image.repository .Values.monitor.image.digest }}{{ else }}{{ printf "%s:%s" .Values.monitor.image.repository .Values.monitor.image.tag }}{{ end }}
+          imagePullPolicy: {{ .Values.monitor.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              d={{ .Values.monitor.evidence.hostPath }}
+              mkdir -p "$d/aggregator"
+              chown 65532:65532 "$d" "$d/aggregator"
+              chmod 0777 "$d" "$d/aggregator"
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: evidence
+              mountPath: {{ .Values.monitor.evidence.hostPath }}
+      containers:
+        - name: evidence-aggregator
+          image: {{ if .Values.monitor.image.digest }}{{ printf "%s@%s" .Values.monitor.image.repository .Values.monitor.image.digest }}{{ else }}{{ printf "%s:%s" .Values.monitor.image.repository .Values.monitor.image.tag }}{{ end }}
+          imagePullPolicy: {{ .Values.monitor.image.pullPolicy }}
+          # umask 000: see monitor/deploy/deployment.yaml (ADR-062) for why the shared evidence
+          # tree needs world-writable creation between the pod's uid and the host-side runner.
+          command: ["/bin/sh", "-c", "umask 000; exec python -m monitor.http_service"]
+          envFrom:
+            - configMapRef:
+                name: evidence-aggregator-config
+          ports:
+            - name: http
+              containerPort: {{ .Values.monitor.aggregator.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          {{- with .Values.monitor.aggregator.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: evidence
+              mountPath: {{ .Values.monitor.evidence.hostPath }}
+      volumes:
+        - name: evidence
+          {{- if eq .Values.monitor.evidence.mode "pvc" }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.monitor.evidence.pvc.existingClaim | default "monitor-evidence" }}
+          {{- else }}
+          hostPath:
+            path: {{ .Values.monitor.evidence.hostPath }}
+            type: Directory
+          {{- end }}

@@ -1,0 +1,134 @@
+# infra/probes/deploy/pod.yaml -- one attempt's in-cluster SLO probe. A Pod TEMPLATE: rendered by
+# runner/live_baseline.py::probe_writer (its render_probe_pod step) once per live run or live
+# baseline measurement window, applied for exactly that window, and deleted once its probes.csv has
+# been retrieved. Supervisor ruling B3; ADR-085; row T-21.
+#
+# WHY A TEMPLATE AND PLACEHOLDER SUBSTITUTION, NOT A HARDCODED MANIFEST
+#   The same technique infra/netpol/probe/client.yaml and infra/netpol/probe/server.yaml already use
+#   for their NODE_NAME_PLACEHOLDER, and for the same class of reason: a run's identity, its probe
+#   stopping rule (--samples or --duration, from the caller-supplied MeasurementWindow --
+#   runner/run.py's own module docstring: "no duration exists outside the evaluation protocol") and
+#   the base URL are properties of one attempt, not of the manifest, so they cannot be literals
+#   here. Every SLO_PROBE_*_PLACEHOLDER token below is not a legal value for the field it sits in,
+#   so an unsubstituted copy of this file is rejected on apply -- the same loud, intended failure
+#   those two files describe, rather than a manifest that quietly applies and does the wrong thing.
+#
+# WHY A POD AND NOT A JOB
+#   A Job's pod, once its main process exits, has no running container left for `kubectl exec` to
+#   reach -- and retrieval here is exactly `kubectl exec -- cat`, the same technique
+#   runner/live_evidence.py::extract_guardian_audit uses to read the Guardian's audit chain out of
+#   its pod with the operator's own kubeconfig, never the workload's own credential
+#   (.agents/rules/10-guardian-first.md). The container's command below therefore drops a completion
+#   marker file and then idles, so the pod stays Running -- and therefore execable -- until the
+#   runner has read its output and deletes it: a per-run lifecycle the runner owns end to end, never
+#   a controller's restart policy. `sleep 3600` is a bounded safety net, not the intended teardown
+#   path: runner.live_baseline.probe_writer deletes the pod itself as soon as it has the file, and a
+#   pod that outlives that -- a crashed runner, an interrupted run -- still self-terminates inside
+#   the hour rather than idling on the cluster forever.
+#
+# WHY THE FRONTEND IS REACHED BY CLUSTER DNS -- THE WHOLE POINT OF ADR-085
+#   "An SLO describes the Service, not a pod" (supervisor ruling B3). A `kubectl port-forward`, by
+#   contrast, is pinned to one pod's IP for the life of the forwarding process; when eradication
+#   deletes that specific pod -- the correct response to a compromised replica -- the forward dies
+#   with it and every later probes.csv row reads a transport failure, even though the Deployment
+#   stayed Ready throughout (the 2026-09-12 defect the ADR records). A pod inside the cluster
+#   resolving the frontend Service's cluster-DNS name is load-balanced across whichever replicas the
+#   Service's endpoints currently list, which is what probing the Service is supposed to measure.
+#
+# WHY NOTHING HERE CAN BE SELECTED BY AN `agents`/`boutique` NETWORKPOLICY OR BY CONTAINMENT
+#   See infra/probes/deploy/namespace.yaml: a NetworkPolicy's podSelector only ever matches pods in
+#   its own namespace, this pod runs in `slo-probe`, and no policy in `agents` or `boutique` -- nor
+#   any Guardian-created containment policy, always created inside `boutique` -- can name a
+#   namespace it does not select. True by construction, not by the absence of a rule someone could
+#   later add by mistake.
+#
+# WHY NO KUBERNETES API ACCESS
+#   infra/probes/slo_probe.py speaks only HTTP to the base URL it is given; nothing in it opens a
+#   Kubernetes client or reads a ServiceAccount token. See infra/probes/deploy/namespace.yaml for why
+#   automountServiceAccountToken is off, and this pod does not set serviceAccountName at all -- it
+#   runs as that namespace's own token-less `default` account.
+#
+# WHY THE SAME PROBE SET, INTERVAL AND TIMEOUT AS EVERY OTHER INVOCATION
+#   The container runs `python -m infra.probes.slo_probe` -- the identical module every unit test in
+#   infra/tests/test_probes_schema.py exercises and every prior port-forwarded invocation ran --
+#   against SLO_PROBE_SET, PROBE_INTERVAL_SECONDS and PROBE_TIMEOUT_SECONDS from
+#   infra/probes/constants.py. Only the base URL and the stopping rule are substituted; the probe
+#   logic itself does not know, and does not need to know, that it is running inside the cluster
+#   rather than on an operator's workstation.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Renaming a placeholder without updating runner/live_baseline.py::render_probe_pod's substitution
+#   table breaks every live run and every live baseline at the first probe collection, loudly
+#   (render_probe_pod refuses a template missing a token it expects). Removing the completion-marker
+#   step strands probe_writer's poll loop until its own bounded timeout. Changing the mount path away
+#   from /data must move PROBE_DATA_DIR / PROBE_OUTPUT_PATH / PROBE_DONE_MARKER in
+#   runner/live_baseline.py in the same commit. Changing the namespace must move PROBE_NAMESPACE
+#   there too.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: SLO_PROBE_POD_NAME_PLACEHOLDER
+  namespace: slo-probe
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: slo-probe
+spec:
+  # No serviceAccountName: this namespace's own `default` account already has its token automount
+  # disabled (infra/probes/deploy/namespace.yaml), and this pod needs no Kubernetes API access at
+  # all -- see WHY NO KUBERNETES API ACCESS above.
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: slo-probe
+      image: SLO_PROBE_IMAGE_PLACEHOLDER
+      # A kind cluster has no image registry; the image is built and `kind load docker-image`-ed
+      # directly into the nodes before any pod can reference it. See ADR-085's deployment steps.
+      imagePullPolicy: Never
+      command: ["/bin/sh", "-c"]
+      # A YAML folded block scalar (>-): parses to one space-joined line, so the substitution below
+      # -- plain text.replace() over the file's raw, unparsed source in
+      # runner/live_baseline.py::render_probe_pod -- finds each whole PLACEHOLDER token exactly as
+      # it would in a single-line string, while this file stays readable as several. Line breaks
+      # only ever fall between shell words, never inside a token, so folding cannot join two
+      # placeholders into one. SLO_PROBE_STOP_ARGS_PLACEHOLDER expands to a bare, unquoted
+      # "--samples N" or "--duration S", which is correct shell word-splitting for a value
+      # containing exactly one space and no metacharacters (runner/live_baseline.py builds it from
+      # an int or a float, never from free-form text).
+      args:
+        - >-
+          set -eu;
+          mkdir -p /data &&
+          python -m infra.probes.slo_probe
+          --out /data/probes.csv
+          --base-url "SLO_PROBE_BASE_URL_PLACEHOLDER"
+          SLO_PROBE_STOP_ARGS_PLACEHOLDER || probe_status=$?;
+          touch /data/DONE;
+          sleep 3600
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: data
+          mountPath: /data
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+  volumes:
+    # emptyDir, not a PVC: the probes.csv this pod writes is read back by the runner and copied into
+    # the run bundle before the pod is deleted (data-management section 1 already makes probes.csv a
+    # bundle member; nothing needs a second, cluster-side copy to outlive the pod).
+    - name: data
+      emptyDir: {}

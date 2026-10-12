@@ -1,0 +1,136 @@
+# infra/boutique/kustomization.yaml -- the Kustomize overlay that puts Google Cloud Platform's
+# Online Boutique (github.com/GoogleCloudPlatform/microservices-demo) into the `boutique` namespace
+# of the kind cluster, at pinned image digests and without its bundled load generator.
+#
+# WHY AN OVERLAY OVER THE UPSTREAM BASE, AND NOT A VENDORED COPY
+#   Upstream publishes the same application three ways: a flat release/kubernetes-manifests.yaml, a
+#   Helm chart, and kustomize/base/, which is the composable entry point its own variants build on.
+#   This overlay consumes the base. Vendoring a copy of the manifests into this repository would
+#   make the application under test a thing this project maintains -- every upstream fix would
+#   arrive as a manual merge, and the dissertation's claim that the target application is stock
+#   Online Boutique would quietly stop being checkable. Referencing the base by an immutable release
+#   tag keeps the application upstream's and keeps the delta this project applies -- a namespace,
+#   digest pins, one deletion -- visible in three short files instead of buried in a fork.
+#
+#   The consequence, stated rather than discovered later: `kubectl apply -k` on this directory needs
+#   `git` on PATH and network access to github.com, because that is how Kustomize fetches a remote
+#   base. A fully offline bring-up is therefore not a property of this overlay. It is a property the
+#   local image cache gives you on the second run and never on the first -- and the first fetch is
+#   slow enough that the resource URL below has to raise Kustomize's git timeout explicitly; the
+#   comment on that line records the measurement behind the number.
+#
+# THE REF LITERAL IS A MIRROR OF infra/versions.env, AND A TEST HOLDS THE TWO TOGETHER
+#   The resource URL below carries `?ref=v0.10.6` as a literal. It has to: Kustomize has no variable
+#   substitution and cannot read an environment variable, so the version of the application under
+#   test cannot be expressed here as a reference to infra/versions.env's BOUTIQUE_MANIFEST_REF.
+#   That key is nevertheless the pin of record -- it is one of the values the versions_env_sha256
+#   digest in every run manifest closes over (docs/protocols/data-management.md section 2), so a
+#   bundle sealed against one ref while the cluster ran another would record a stack that was never
+#   deployed.
+#
+#   **Change the literal below and BOUTIQUE_MANIFEST_REF in infra/versions.env in the same commit.**
+#   infra/tests/test_load_profiles.py asserts the two are equal, so the pair cannot drift silently:
+#   the moment they disagree, CI's infra pytest step fails and names both values. The assertion
+#   skips itself while BOUTIQUE_MANIFEST_REF is still empty, which is its state until the milestone
+#   task that populates the application group of versions.env lands.
+#
+# WHICH REF, AND HOW IT WAS CHOSEN
+#   v0.10.6 -- the newest release of GoogleCloudPlatform/microservices-demo carrying neither the
+#   prerelease nor the draft flag, taken from the repository's releases API rather than from a
+#   README or a docs page, which lag. A release tag rather than a commit SHA because upstream
+#   publishes container images only for releases, so a base taken from an arbitrary commit would
+#   reference image tags that were never built.
+#
+# NAMESPACE
+#   `namespace: boutique` stamps every resource the base produces. The Namespace object itself is
+#   deliberately NOT created here. Kustomize applies this field as a transformation over resources
+#   it already holds, so a Namespace declared in this overlay would itself be stamped into the
+#   namespace it defines -- legal, confusing, and a trap for the next reader. The namespace is
+#   created by the bring-up script that applies this overlay (M1-T1.6). Applying this directory
+#   against a cluster with no `boutique` namespace fails loudly on the first resource, which is the
+#   correct failure: nothing is half-deployed.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Dropping the digest pins (transformers: below) makes the deployed application a moving target:
+#   two runs weeks apart would compare different binaries while claiming the same versions digest.
+#   Dropping the loadgenerator deletion (patches: below) restores uncontrolled background traffic to
+#   every run, which is measured by the RQ4 interference figures as though it were load this project
+#   asked for. Changing `namespace` breaks the resource collector's series attribution, which reads
+#   the namespace label to separate the application from the framework and the platform. Changing a
+#   count in `replicas:` below breaks the scenario slate: every `target.replicas` in
+#   scenarios/manifests/ and every verified-recovery `replicas-at-least` minimum in
+#   scenarios/groundtruth/ is that count restated, and ADR-061 is what holds the four places
+#   together.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: boutique
+
+resources:
+  # The `//` separates the repository from the path inside it; `?ref=` pins the git ref. Keep that
+  # literal and infra/versions.env's BOUTIQUE_MANIFEST_REF in step -- see the header.
+  #
+  # The other two query parameters are Kustomize's own, stripped before the URL is fetched, and both
+  # were added because the default fails here rather than because they looked prudent. Kustomize
+  # allows a git command 27 seconds; a shallow fetch of this tag was measured at 71 seconds from the
+  # development host, so `kubectl apply -k` on a cold cache fails with a timeout that reads like a
+  # syntax error. `timeout=300` is generous enough to survive a slow link without turning a genuine
+  # network outage into a five-minute hang before the failure. `submodules=false` removes the
+  # recursive submodule fetch Kustomize performs by default; this repository has no submodules, so
+  # the step is a network round trip that can only cost time or fail.
+  #
+  # The URL runs past the repository's 100-column wrap because it is one unbreakable token;
+  # infra/versions.env's KIND_NODE_IMAGE runs past it for the same reason.
+  - https://github.com/GoogleCloudPlatform/microservices-demo//kustomize/base?ref=v0.10.6&timeout=300&submodules=false
+
+transformers:
+  # Digest pins, one builtin ImageTagTransformer document per image. They are in their own file
+  # rather than in an `images:` block here because images.yaml is what infra/versions.env's
+  # BOUTIQUE_IMAGE_DIGESTS_FILE names, and a key that points at a file has to point at a file.
+  # `transformers:` (not `components:`) is the field that accepts a plain YAML file path: a
+  # Kustomize component is a directory containing its own kustomization.yaml, so a component could
+  # not have been named images.yaml.
+  - images.yaml
+
+patches:
+  # Removes the upstream loadgenerator Deployment and the ServiceAccount it runs as. Strategic-merge
+  # deletion, `$patch: delete`, two documents in one patch file; see remove-loadgenerator.yaml for
+  # why the workload goes and what replaces it.
+  - path: remove-loadgenerator.yaml
+  # Raises emailservice's gRPC liveness/readiness probe timeout from the base's 1s to 5s, and
+  # nothing else -- the minimal, probe-only delta that keeps env-bring-up from CrashLoopBackOff on a
+  # memory-tight kind node while leaving the application stock in every respect the study measures.
+  # See emailservice-probe-timeout.yaml and ADR-140.
+  - path: emailservice-probe-timeout.yaml
+
+replicas:
+  # The five scenario target workloads, and only those five. Upstream's base sets no `replicas` at
+  # all, so every Deployment defaults to one -- which makes four of the five scenarios contradict
+  # themselves: their containment step isolates "the affected replica" and their next step requires
+  # the Deployment to still be serving, and at one replica those are the same pod. The counts below
+  # are what the ground truth already asserts, moved from prose into the overlay that deploys it.
+  #
+  # Three rather than two for the four delegated workloads is a determinism argument, not a capacity
+  # one. SCN-SIM-03 kills a checkoutservice pod and then quarantines a second, surviving replica; its
+  # containment assertion reads `status.readyReplicas` (ADR-049), so at two replicas the assertion
+  # passes or fails on whether the replacement pod became Ready first -- a phase outcome decided by
+  # wall clock, which .agents/rules/20 forbids in scenario paths. At three there is an uninvolved
+  # Ready replica throughout. frontend stays at two because the operator fixed it there.
+  #
+  # The five services with no `replicas` entry -- currencyservice, emailservice,
+  # recommendationservice, redis-cart, shippingservice -- keep upstream's default of one. They are
+  # not scenario targets, nothing isolates a replica of them, and paying for a second pod each buys
+  # nothing the slate reads. ADR-061 records the original counts; ADR-091 adds adservice for CVE-05.
+  - name: adservice
+    count: 3
+  - name: cartservice
+    count: 3
+  - name: checkoutservice
+    count: 3
+  - name: productcatalogservice
+    count: 3
+  - name: paymentservice
+    count: 3
+  - name: frontend
+    count: 2

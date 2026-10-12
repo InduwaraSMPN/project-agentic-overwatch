@@ -1,0 +1,41 @@
+/*
+# The Guardian image (guardian/deploy/Dockerfile) COPYs the repo-root requirements.lock and
+# installs it --require-hashes. `/*` above excludes every root file, so the lock has to be
+# re-included by name or the build fails at `COPY requirements.lock` with "not found" (ADR-141:
+# the M10 commit added the COPY but not this line, so the build broke the first time layer 10
+# reached it). A file, not a directory, so no trailing slash.
+!/requirements.lock
+!/monitor/
+!/guardian/
+!/scenarios/
+/scenarios/*
+!/scenarios/__init__.py
+!/scenarios/schemas/
+/scenarios/schemas/*
+!/scenarios/schemas/__init__.py
+!/scenarios/schemas/yamlsubset.py
+!/scenarios/cve/
+/scenarios/cve/*
+!/scenarios/cve/images.yaml
+# The in-cluster SLO probe image (ADR-085) is built from the repo root and COPYs only the two
+# modules infra.probes.slo_probe imports. Un-ignore exactly those, mirroring the scenarios/schemas
+# allowlist above, so the probe build sees them without pulling the rest of infra/ (boutique,
+# cilium, observability, the langfuse data volumes) into any image's context.
+!/infra/
+/infra/*
+# ADR-182: guardian/deploy/Dockerfile reads PERL_BASE_VERSION from infra/versions.env inside the
+# build, so a builder that forgets to forward a build arg cannot build a different image from the
+# one the VM runs -- the failure the self-scan CI job hit when the pin first arrived as an ARG. The
+# LAST matching pattern wins in a .dockerignore, so this re-inclusion has to sit after the
+# `/infra/*` exclusion above rather than beside the root `requirements.lock` line.
+!/infra/versions.env
+!/infra/__init__.py
+!/infra/probes/
+/infra/probes/*
+!/infra/probes/__init__.py
+!/infra/probes/constants.py
+!/infra/probes/slo_probe.py
+monitor/.replay/
+monitor/runtime/
+monitor/**/__pycache__/
+monitor/**/*.pyc

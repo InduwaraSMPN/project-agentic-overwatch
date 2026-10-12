@@ -1,0 +1,16 @@
+# Fixture manifest -- flat `key: value`, no nesting and no lists. See monitor/fixtures/README.md
+# for the format, the key set, and why the corpus_cap_* values are not evaluation-protocol values.
+fixture_id: four-source-incident
+source: falco,prometheus,k8s_audit,trivy
+provenance: synthesised
+synthesised_from: The four upstream shapes each single-source fixture in this corpus cites -- Falco's JSON emitter, the Alertmanager webhook_config body, the audit.k8s.io/v1 Event, and the trivy image JSON report -- assembled here into one incident. Nothing in it was captured from a running cluster; the correlation between the four families is an authored narrative, not an observed one.
+capture_commit:
+source_tool_version:
+seed:
+golden_arm: G0-FULL
+audit_severity: critical
+corpus_cap_status: FIXTURE-CORPUS-TEST-PARAMETER
+corpus_cap_excerpt_count_max: 4
+corpus_cap_excerpt_length_max_chars: 120
+corpus_cap_summary_length_max_chars: 200
+description: All four families in one directory, which is what exercises the ordered source registry across sources rather than within one. Timestamps interleave deliberately, so emission order crosses file boundaries and cannot be produced by concatenating per-source runs. Two records share a timestamp to the microsecond across two families, which is where source_rank decides; two Trivy findings share a timestamp within one family, which is where the event_id tie-break decides. One replay of this fixture therefore exercises every component of the total order (source_ts, source_rank, event_id).

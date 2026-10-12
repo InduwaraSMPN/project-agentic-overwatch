@@ -1,0 +1,579 @@
+# guardian/deploy/rbac.yaml -- the one identity in this cluster that is allowed to change the
+# target application, and the exact list of things it is allowed to do to it. Milestone task
+# M3-T3.4, and the executable form of docs/protocols/security-policy.md section 1 invariant 2:
+# "only guardian/ holds a kubeconfig/ServiceAccount able to mutate the cluster; its own RBAC is
+# least-privilege (only verbs the scenarios require)."
+#
+# WHY THIS FILE IS MOSTLY COMMENT
+#   Writing RBAC is easy. Defending it is not. "Least privilege" is a claim, and at the viva it is
+#   a claim an examiner tests one verb at a time: why does the Guardian need `delete` on pods, and
+#   what would break if it did not have it? A grant with no answer to that question is a grant that
+#   should not exist, so every verb below is written next to the phase it serves and the action it
+#   makes possible. The verbs that are absent matter just as much, and the deliberate exclusions
+#   are enumerated too -- an examiner cannot see the absence of `create pods/exec` unless somebody
+#   writes down that it was considered and refused.
+#
+# THE ONE-SENTENCE SHAPE, WHICH IS THE FASTEST THING TO CHECK
+#   The ClusterRole below contains no mutating verb at all. Everything the Guardian can change is
+#   granted by a namespaced Role in `boutique`, the target application's namespace. So the
+#   cluster-wide grant is read-only by construction, and the blast radius of the entire agent
+#   framework -- hostile agent layer included, because that is the threat model -- is one
+#   namespace of a disposable kind cluster. That is the property security-policy.md section 3
+#   calls "blast radius = the kind cluster", made narrower and made checkable.
+#
+# WHAT LEAST PRIVILEGE DOES AND DOES NOT MEAN HERE, BECAUSE IT IS EASY TO MISREAD
+#   It does NOT mean the Guardian cannot damage Online Boutique. It can: `patch` on a Deployment
+#   scales it to zero, `create` on a NetworkPolicy can cut a service off from its dependencies, and
+#   `delete` on a pod destroys a running instance. Those capabilities are required, not tolerated.
+#   The evaluation measures whether an autonomous agent contains an incident correctly, and one of
+#   the researcher-judged measures in docs/protocols/evaluation-protocol.md section 3 is a count of
+#   incorrect or harmful actions -- a measure that is identically zero, and therefore meaningless,
+#   if the artefact is incapable of harmful action in the first place. Least privilege here means
+#   the Guardian cannot damage anything OUTSIDE the target application: not the Monitor, not the
+#   observability stack, not the agent namespace, not the cluster's own machinery, not itself.
+#
+# HOW THIS IS VERIFIED (TIER B; THIS FILE CANNOT BE APPLIED OFFLINE)
+#   Two assertions, both run against a live cluster in the bringup workflow or a runbook, never in
+#   ci.yml's per-change checks. They are stated here rather than only in the plan, because the
+#   commands are the definition of the claim and they belong next to the grant they interrogate.
+#
+#   (1) THE GUARDIAN HOLDS EXACTLY THESE VERBS AND NO MORE.
+#         kubectl auth can-i --list --as=system:serviceaccount:guardian:guardian
+#         kubectl auth can-i --list --as=system:serviceaccount:guardian:guardian -n boutique
+#       The first is the cluster-scoped effective set, the second the effective set inside the
+#       target namespace. Each is diffed against the table below. `auth can-i` is used rather than
+#       re-reading this file because it answers through the API server's real authorizer chain,
+#       including RBAC aggregation and any binding this file did not write; reading the file back
+#       would only prove that the file says what the file says.
+#
+#       The negatives are the interesting half, and each of these must print `no`:
+#         kubectl auth can-i create pods/exec         -n boutique --as=SA   # shell in a container
+#         kubectl auth can-i create pods/portforward  -n boutique --as=SA   # tunnel via the API
+#         kubectl auth can-i get    secrets           -n boutique --as=SA   # credential material
+#         kubectl auth can-i create serviceaccounts/token -n agents  --as=SA # token minting
+#         kubectl auth can-i patch  deployments       -n agents    --as=SA   # outside the target
+#         kubectl auth can-i patch  deployments       -n monitor   --as=SA   # outside the target
+#         kubectl auth can-i patch  nodes                          --as=SA   # cordon / drain
+#         kubectl auth can-i deletecollection pods    -n boutique  --as=SA   # unnamed deletion
+#         kubectl auth can-i '*'    '*'                            --as=SA   # any wildcard
+#       where SA is system:serviceaccount:guardian:guardian. A `yes` on any line is a defect in
+#       this file, not in the test.
+#
+#   (2) NO OTHER SERVICEACCOUNT HOLDS CLUSTER-MUTATION RIGHTS.
+#       Enumerate every ServiceAccount with `kubectl get serviceaccounts --all-namespaces`, drop
+#       `guardian:guardian` and drop the `kube-system` accounts, and for each remaining account
+#       assert that every mutating verb in the table below answers `no` on every resource in the
+#       table, in `boutique` and cluster-wide. The kube-system carve-out is named rather than
+#       silently applied: the scheduler, the controller manager and the CNI genuinely do hold
+#       mutation rights, they are the cluster's own machinery rather than part of the artefact, and
+#       an assertion that pretended otherwise would be an assertion nobody could ever make pass.
+#       The accounts that matter to the claim are the ones this project creates -- in `agents`,
+#       `boutique`, `monitor`, `locust` and `observability` -- and none of them is bound to
+#       anything here.
+#
+#       This assertion is what makes "sole credential holder" a fact rather than an intention. The
+#       NetworkPolicy in infra/netpol/agents-default-deny.yaml closes the agent layer's network
+#       path to the API server; this closes its credential path. They are independent failure
+#       modes and each needs its own evidence, which is why FR4.2 names both.
+#
+# WHY THE MUTATING GRANT IS A ROLE IN `boutique` AND NOT A CLUSTERROLE
+#   A ClusterRole with the same verbs would be one object fewer and would work identically for
+#   every scenario M5 currently plans, because every scenario perturbs Online Boutique. It is
+#   rejected because the difference only shows up in the failure case: a ClusterRole grant that is
+#   wrong is wrong everywhere at once, including in the namespace holding the agent layer that the
+#   threat model treats as the attacker, and including in `guardian` itself -- an artefact whose
+#   own ServiceAccount could delete its own pod is an artefact with a self-destruct verb nobody
+#   asked for. A namespaced Role makes the containment argument in security-policy.md section 4
+#   ("no capability for external action exists") narrow enough to state in one sentence, and it
+#   makes the second Tier B assertion above cheap: any mutating answer outside `boutique` is a
+#   failure regardless of which object granted it.
+#
+#   The cost is real and is accepted: a scenario that ever needs to act outside `boutique` needs a
+#   second Role and a second RoleBinding in this file, landing with the milestone that introduces
+#   that scenario. That is the reviewable event least privilege is supposed to produce.
+#
+# THE NAMESPACES THIS FILE NEEDS, AND WHICH ONES IT CREATES
+#   It creates `guardian`, because the ServiceAccount is namespaced and this is the milestone that
+#   lands the Guardian -- the namespace table in infra/collectors/resource_collector.py records
+#   exactly that division of labour ("M2 lands the Monitor and M3 lands the Guardian, and each
+#   extends the framework side of this table in its own milestone, in the same commit that creates
+#   the namespace"), and `guardian` is already an entry there classified as `framework`.
+#
+#   It does NOT create `boutique`. That namespace is created by scripts/up.sh, which is the bring-up
+#   script that applies the application overlay, and infra/boutique/kustomization.yaml records why
+#   the overlay declines to create it too. The consequence is an ordering requirement rather than a
+#   defect: this file is applied AFTER `make up` has created `boutique`, and applying it to a bare
+#   cluster fails loudly on the RoleBinding, which is the correct failure -- nothing half-applied,
+#   and an error naming the missing namespace.
+#
+#   It does NOT create `agents`. infra/netpol/agents-default-deny.yaml does, in the same object set
+#   as the policy that protects it, for the reason its header gives.
+#
+# WHAT IS DELIBERATELY NOT IN THIS FILE
+#   No Deployment, no Service, no ConfigMap and no Secret. This file is the identity and its
+#   permissions; the workload that assumes the identity is a separate object with a separate
+#   lifecycle, and a reader auditing permissions should not have to read past a container spec to
+#   do it. Above all there is no credential material of any kind here: RBAC grants permission, it
+#   never carries a token, a key or a kubeconfig. The Guardian's signing key arrives by env or
+#   Kubernetes Secret (security-policy.md section 2) and its API credential is the projected
+#   ServiceAccount token the kubelet mounts, which rule 10 forbids copying anywhere else --
+#   including into tests, into .env, and into this repository.
+#
+#   `automountServiceAccountToken` is left at its default of true on the ServiceAccount below,
+#   because the Guardian pod genuinely needs the token: it is the sole credential holder, and this
+#   is the credential. That is the opposite of the setting the agent namespace gets, and the
+#   asymmetry is the whole design.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Adding a verb widens what a fully hostile agent layer can reach through a permitted decision,
+#   because the Guardian's RBAC is the outer bound on every OPA policy: policy can only be narrower
+#   than the credential, never wider. Adding a namespace to the RoleBinding moves the blast radius.
+#   Renaming the ServiceAccount breaks the `--as=` assertions above and any Deployment referencing
+#   it. Promoting the Role to a ClusterRole silently deletes the one-sentence property this file
+#   exists to be able to state. Binding any of these roles to a second subject ends the
+#   sole-credential-holder claim outright, and it is the second Tier B assertion that would catch
+#   it.
+---
+# The Guardian's own namespace. Created here because the ServiceAccount below cannot exist without
+# it and because M3 is the milestone that lands the Guardian; see THE NAMESPACES THIS FILE NEEDS.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: guardian
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: guardian
+    # The Guardian is a plain HTTP service with no need for host namespaces, host paths, host
+    # ports or privileged containers, so the Baseline profile costs it nothing and closes the
+    # host-namespace escape hatch by admission rather than by hoping nobody writes it. `restricted`
+    # is deliberately not enforced: it dictates runAsNonRoot, seccomp and capability drops, which
+    # are properties of the Guardian's container spec and belong to the task that authors it --
+    # enforcing them from here would fail that task's first apply for reasons its author did not
+    # choose. `warn: restricted` reports the gap without blocking it, so the information is on the
+    # record when that task lands.
+    #
+    # No enforce-version label. The profile level is the decision this file owns; the Kubernetes
+    # minor the profile is evaluated against is a property of KIND_NODE_IMAGE in infra/versions.env,
+    # and pinning it here would be a second home for a version that file already owns.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+# THE SOLE SERVICEACCOUNT. Every mutation this project ever makes to the target application is
+# authenticated as this identity and no other. FR4.2, security-policy.md section 1 invariant 2, and
+# traceability row T-11.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: guardian
+  namespace: guardian
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: guardian
+# automountServiceAccountToken is left unset, which means true. See WHAT IS DELIBERATELY NOT IN
+# THIS FILE: this account IS the credential, and the pod that runs the Guardian needs it mounted.
+---
+# CLUSTER-SCOPED GRANT: READ ONLY, AND THAT IS THE POINT.
+#
+# Two resources, two verbs, no mutation. Both are cluster-scoped objects that a namespaced Role
+# cannot express, which is the only reason a ClusterRole exists in this file at all.
+#
+#   nodes       get, list   [detection-and-investigation] Evidence from Falco and from the
+#                           Kubernetes audit stream is attributed to a node, and an investigation
+#                           that cannot resolve which node a pod runs on cannot join those signals
+#                           to the workload they describe. Read-only: `patch` on nodes is what
+#                           cordon and drain are made of, and on a two-node kind cluster cordoning
+#                           the single worker is indistinguishable from destroying the environment.
+#                           That is a capability whose only outcome is total denial of service, and
+#                           it is refused rather than mediated.
+#   namespaces  get, list   [detection-and-investigation] Enumerating the blast radius is the first
+#                           question of an investigation -- what else is in this cluster, and did
+#                           the incident touch it. Read-only for the obvious reason: `delete` on a
+#                           namespace removes every object in it in one unrecoverable action, and
+#                           `create` would let the artefact place workloads outside every boundary
+#                           this file draws.
+#
+# Nothing else is cluster-scoped in the verb table. In particular there is no grant over
+# ClusterRoles, ClusterRoleBindings, CustomResourceDefinitions, ValidatingWebhookConfigurations,
+# PersistentVolumes or CiliumClusterwideNetworkPolicies, and no `escalate`, `bind` or `impersonate`
+# verb anywhere: those are the standard privilege-escalation primitives, and their absence is what
+# makes the bound on this credential a real bound rather than a starting point.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agentic-overwatch-guardian-cluster-read
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: guardian
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agentic-overwatch-guardian-cluster-read
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: guardian
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agentic-overwatch-guardian-cluster-read
+subjects:
+  # Exactly one subject, forever. A second subject here ends the sole-credential-holder claim, and
+  # Tier B assertion (2) in the header is what would catch it.
+  - kind: ServiceAccount
+    name: guardian
+    namespace: guardian
+---
+# THE MUTATING GRANT, CONFINED TO THE TARGET APPLICATION'S NAMESPACE.
+#
+# The verb table. Each row names the incident-response phase it serves -- the four phases of
+# docs/02-architecture.md section 1 and FR2.2: detection-and-investigation (D&I), containment (C),
+# eradication (E), verified-recovery (VR) -- and the concrete action it makes possible.
+#
+#   pods                  get, list   [D&I, VR]  What is actually running, from which image
+#                                     digest, on which node, with which labels and restart count.
+#                                     This is the ground truth an investigation reasons over and
+#                                     the evidence a recovery claim is checked against.
+#   pods/log              get         [D&I]      Container logs are the primary investigation
+#                                     artefact for an application-layer incident, and the only one
+#                                     that shows what the workload itself observed. This is a
+#                                     subresource grant rather than a shell: it returns a stream
+#                                     the workload already wrote, and it cannot change anything.
+#   pods                  patch       [C]        Quarantine. Removing or altering the label a
+#                                     Service selects on takes a compromised replica out of the
+#                                     load-balancing set while leaving it running for forensics --
+#                                     the containment move that preserves evidence instead of
+#                                     destroying it, and the reason `patch` on pods is separated
+#                                     from `delete` on pods below rather than folded into it.
+#   pods                  delete      [E]        Remove a compromised instance. The owning
+#                                     controller recreates it from the -- by then patched --
+#                                     template, which is what makes deletion an eradication step
+#                                     rather than an outage.
+#   services              get, list   [D&I, VR]  Resolve which Service fronts the affected
+#                                     workload, and confirm afterwards that it still does.
+#                                     Read-only: containment by editing a Service selector would
+#                                     be a second way to do what `patch` on pods already does,
+#                                     and it acts on every replica at once rather than on the
+#                                     compromised one. One primitive per capability keeps the
+#                                     surface OPA has to reason about, and the audit record has to
+#                                     describe, exactly as small as the capability itself.
+#   events                get, list   [D&I]      The cluster's own account of restarts, OOM kills,
+#                                     failed image pulls, probe failures and scheduling
+#                                     rejections -- corroboration for the Monitor's evidence from
+#                                     a source the agent layer cannot author. The `events.k8s.io`
+#                                     API group is deliberately not granted as well: it is a second
+#                                     API surface over the same stored objects, so a second grant
+#                                     would add permission without adding access to any data.
+#   deployments           get, list   [D&I, VR]  Desired state, image digests, and the rollout
+#                                     status that a verified-recovery claim is made from.
+#   deployments           patch       [C, E, VR] Three phases, one verb, and the concentration is
+#                                     deliberate: scale to zero contains, swapping the image digest
+#                                     for a patched one eradicates (which is exactly what the M5
+#                                     CVE arm's remediation is), and a rollout restart or a
+#                                     rollback recovers. The `deployments/scale` subresource is NOT
+#                                     granted in addition, because `patch` on the Deployment
+#                                     already sets `spec.replicas`: granting both would give one
+#                                     capability two request shapes, doubling what the policy must
+#                                     match and what the audit log must be read as.
+#   replicasets           get, list   [VR]       A Deployment's rollout history lives in its
+#                                     ReplicaSets, and a rollback that cannot see which revision it
+#                                     is returning to is a rollback nobody can score against ground
+#                                     truth. Read-only: ReplicaSets are written by the Deployment
+#                                     controller, and an artefact that edited them directly would
+#                                     be fighting the controller rather than driving it.
+#   networkpolicies       get, list,  [C, VR]    Network-level quarantine is the containment
+#                         create,                primitive of a cloud-native environment, and
+#                         delete                 removing that policy is how verified-recovery
+#                                     restores service. `update` and `patch` are absent on purpose:
+#                                     a containment policy is created whole and removed whole,
+#                                     never edited in place, so every containment step is one
+#                                     action with a complete before-and-after in the audit chain
+#                                     rather than a sequence of diffs a reader has to replay.
+#                                     Only the portable networking.k8s.io object is granted; see
+#                                     WHY NO cilium.io GRANT below.
+#   rolebindings          get, patch, [C, E]     ADR-083 (supervisor ruling §3.1 items 2-3):
+#                         delete                 SCN-SIM-02's redesigned escalation is a namespaced
+#                                     RoleBinding granting the compromised ServiceAccount reach it
+#                                     should not have. Containment revokes by removing that one
+#                                     subject (`patch`, never `delete` -- containment still never
+#                                     deletes); eradication removes the RoleBinding outright once
+#                                     the compromised object it named is being replaced rather than
+#                                     merely defused. `get` is not a capability any phase's token can
+#                                     carry -- it never appears in authority.rego -- it is here only
+#                                     because the subject-removal patch has to read the current
+#                                     subject list before it can name which one to take out
+#                                     (`guardian/app/executor.py`'s `_revoke_rolebinding_subject_body`
+#                                     reads, then patches). `update` is absent for the same reason it
+#                                     is absent from the `networkpolicies` row: a subject-removal
+#                                     patch is a fixed, narrow shape, never a caller-supplied
+#                                     replacement object.
+#
+#                                     THE RBAC ESCALATION-PREVENTION CONSTRAINT, REPORTED RATHER
+#                                     THAN WORKED AROUND. Kubernetes independently guards every
+#                                     create *and update* of a RoleBinding: the caller must already
+#                                     hold every permission the bound Role or ClusterRole grants, or
+#                                     hold `bind` on that specific Role/ClusterRole (ordinarily
+#                                     scoped with `resourceNames`). This applies to the subject-only
+#                                     patch above exactly as it would to a create, because Kubernetes
+#                                     does not distinguish which fields an update changes -- only
+#                                     that the object being updated names a `roleRef`. The Guardian's
+#                                     own permissions are deliberately narrower than an escalation
+#                                     grant (that is the whole scenario), so this patch will be
+#                                     refused by the API server itself unless the Guardian also holds
+#                                     `bind`, scoped to the exact Role or ClusterRole the escalation
+#                                     RoleBinding names. ADR-090 fixes that target Role's name as
+#                                     `boutique-escalation`; the rule below grants `bind` on exactly
+#                                     that Role and nothing else. An unscoped bind or any ClusterRole
+#                                     bind remains forbidden. The executor's adversarial tests prove
+#                                     the patch can only remove an existing subject.
+#   jobs, cronjobs        get, list,  [D&I, E]   A scheduled workload is the standard persistence
+#                         delete                 mechanism, and deleting it is the only way to
+#                                     remove it. `create` is absent so that this credential cannot
+#                                     be used to ESTABLISH persistence -- the same verb that
+#                                     eradicates a planted CronJob would otherwise plant one.
+#   endpointslices        get, list   [VR]       The authoritative answer to "did containment
+#                                     actually take effect": a quarantined pod that is still in the
+#                                     Service's endpoint set is still receiving traffic, whatever
+#                                     its labels now say. Verifying containment from the same
+#                                     object the datapath reads is what keeps a recovery claim from
+#                                     resting on the agent's own account of what it did.
+#
+# VERBS THAT WERE CONSIDERED AND REFUSED. An absence proves nothing unless it is written down.
+#
+#   create pods/exec        The single most dangerous grant in Kubernetes. It is a shell inside a
+#                           container, and it collapses every other restriction in this file at
+#                           once, because whatever the container can do the caller can now do
+#                           without any of it appearing as an ActionRequest verb. An artefact that
+#                           mediates actions while granting `create` on `pods/exec` has mediated
+#                           nothing, and the audit log would record one permitted action covering
+#                           an unbounded set of real ones. This is the exclusion to name first if
+#                           asked which one matters most.
+#   create pods/portforward Tunnels arbitrary TCP to any pod through the API server. It is not only
+#                           a privilege bypass, it is a NETWORK bypass: it would give the framework
+#                           a route into the cluster that does not traverse the datapath
+#                           infra/netpol/ constrains, which would make the T-11 probe prove less
+#                           than it appears to.
+#   create pods            The Guardian never creates workloads. Recovery restores what exists;
+#                           creating a pod is what an attacker does to establish a foothold, and it
+#                           is the one action whose absence cannot be worked around by any
+#                           legitimate incident-response step the four phases describe.
+#   * on secrets           No verb, in any API group, in any namespace. A permitted read would put
+#                           credential material into an ActionResult's stdout_ref and from there
+#                           into a sealed run bundle, where docs/protocols/data-management.md
+#                           section 5's sanitizer would have to remove it from a record that has
+#                           already been hashed into the audit chain -- the exact interaction the
+#                           M3 design decision "records are born clean" exists to make impossible.
+#                           The cheapest way to keep a secret out of the chain is never to have the
+#                           permission to read one.
+#   create serviceaccounts/token
+#                           TokenRequest. This is the verb that issues the scoped credential the
+#                           G2-SHAREDCRED arm hands to the agent layer, and it is deliberately NOT
+#                           held by the Guardian, in any arm. If it were, the Guardian could mint a
+#                           token for any ServiceAccount it can name, which is a privilege
+#                           escalation primitive present in G0 -- the baseline arm -- and it would
+#                           make the G0-to-G2 delta partly a matter of whether the Guardian chose
+#                           to use a verb it already had. The G2 credential is issued out of band
+#                           by the runner, with the operator's own kubeconfig, which is what lets
+#                           ADR-024 claim that the Guardian's RBAC is byte-identical across arms
+#                           and lets the isolation test check it.
+#   escalate, bind, impersonate, and any verb on roles/clusterroles/clusterrolebindings
+#                           The standard escalation set. Their absence is what bounds everything
+#                           above; with any of them, the table is a starting point rather than a
+#                           limit. `rolebindings` is the one exception, deliberately narrow: ADR-083
+#                           grants `get`, `patch` and `delete` on it, in `boutique` only, for the
+#                           reasons the verb table's `rolebindings` row gives, and `bind` is still
+#                           refused here in every form -- see that row's own note on why the
+#                           subject-revocation patch may still be refused by Kubernetes' own
+#                           escalation check until a `resourceNames`-scoped `bind` grant follows,
+#                           once the scenario names the Role it targets.
+#   deletecollection        `delete` without naming an object. One request removes every pod
+#                           matching a selector, and the resulting AuditRecord names a selector
+#                           rather than a resource -- so the log could not answer "what was
+#                           destroyed", which is the question NFR6 and FR4.3 exist to answer. Every
+#                           deletion must name its object.
+#   watch                   Not a bounded action. The ActionRequest/ActionResult contract in
+#                           docs/02-architecture.md section 3 is one request, one decision, one
+#                           audit record, one bounded stdout_ref; a watch is an open stream with no
+#                           terminating result, so it cannot be audited in that shape at all.
+#                           Polling with `get` and `list` expresses everything the four phases need
+#                           and each poll is one auditable action.
+#   patch/update on nodes   Cordon and drain. See the ClusterRole above.
+#   * (any wildcard)        No wildcard appears in this file, in apiGroups, resources or verbs. A
+#                           wildcard grant cannot be diffed against the table above, which would
+#                           make Tier B assertion (1) unfalsifiable.
+#   configmaps, statefulsets, daemonsets, persistentvolumeclaims, ingresses
+#                           Not granted because no scenario needs them. Online Boutique ships
+#                           Deployments only, so a grant over StatefulSets or DaemonSets would be a
+#                           permission with nothing behind it. When M5 writes a scenario that needs
+#                           one, it arrives here with that scenario, with its own row in the table
+#                           above -- which is exactly the reviewable event this design wants, and
+#                           the reason the list is short today rather than pre-emptively generous.
+#
+# WHY NO cilium.io GRANT
+#   Containment uses the portable networking.k8s.io NetworkPolicy, which ADR-014 already
+#   established is enforced in this cluster and which is the object a reader of this project can
+#   evaluate without knowing Cilium. Granting CiliumNetworkPolicy as well would put a second policy
+#   language in the Guardian's hands -- one whose vocabulary includes `toEntities: kube-apiserver`
+#   and `world` -- so a containment action could be written in the same grammar that
+#   infra/netpol/ uses to isolate the agent layer. The namespaced Role makes the worst case
+#   harmless in practice, since anything created would land in `boutique`, but "harmless because of
+#   where it lands" is a weaker argument than "not expressible", and CiliumClusterwideNetworkPolicy
+#   is cluster-scoped and therefore already unreachable from a Role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agentic-overwatch-guardian-incident-response
+  # The target application's namespace, created by scripts/up.sh. See THE NAMESPACES THIS FILE
+  # NEEDS for why this file does not create it and what the apply-ordering consequence is.
+  namespace: boutique
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: guardian
+rules:
+  # --- detection-and-investigation: read the environment -------------------------------------
+  - apiGroups: [""]
+    resources: ["pods", "services", "events"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list"]
+
+  # --- containment: quarantine a workload, at the label layer or the network layer ------------
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "delete"]
+  # ADR-083: revoke an escalation's subject. `get` is the internal pre-read the patch needs, never
+  # a capability offered to an agent (it is absent from authority.rego entirely); `patch` is the
+  # subject-removal capability itself, and only ever the fixed test+remove shape
+  # `guardian/app/executor.py`'s `_revoke_rolebinding_subject_body` builds. See the verb table's
+  # `rolebindings` row for the escalation-prevention constraint this grant alone does not close.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "patch"]
+  # ADR-090: Kubernetes requires bind even for a subject-removing RoleBinding patch. Scope it to
+  # SCN-SIM-02's fixed target Role; no other Role and no ClusterRole can be bound by the Guardian.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    resourceNames: ["boutique-escalation"]
+    verbs: ["bind"]
+
+  # --- containment, eradication and verified-recovery: change the controller's desired state ---
+  # One verb serving three phases; see the `deployments patch` row of the verb table for why that
+  # concentration is intended and why deployments/scale is not granted alongside it.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch"]
+
+  # --- eradication: remove the compromised instance and any persistence it established ---------
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["delete"]
+  # ADR-083: remove the RoleBinding an escalation depended on, once the compromised object it named
+  # is being replaced rather than merely defused by containment's subject-only revocation above.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agentic-overwatch-guardian-incident-response
+  namespace: boutique
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: guardian
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agentic-overwatch-guardian-incident-response
+subjects:
+  # The Guardian's ServiceAccount lives in `guardian` and is bound into `boutique` from here. That
+  # cross-namespace binding is the whole mechanism: the identity is held where the credential is
+  # held, and the permission is granted where the blast radius is meant to be.
+  #
+  # Exactly one subject, forever. See the ClusterRoleBinding above.
+  - kind: ServiceAccount
+    name: guardian
+    namespace: guardian
+---
+# ADR-128 (M10): authenticate the control-plane caller, and nothing more.
+#
+# `POST /v1/tokens` and `POST /v1/phase` require the runner to present a ServiceAccount token, which the
+# Guardian verifies with a TokenReview (guardian/app/control_auth.py). Creating a TokenReview is an
+# authentication query, not a cluster mutation -- it asks the API server "is this token valid, and whom
+# does it name", writes nothing, and stores nothing -- but RBAC still expresses it as `create` on the
+# `tokenreviews` resource. It is therefore a ClusterRole of its own rather than a row on the read-only
+# cluster grant above, which carries no verb the mutating set contains; the manifest test carves this
+# one authentication verb out explicitly rather than widening that grant. No other verb accompanies it,
+# and it names no other resource: this credential can ask whether a token is valid and can do nothing
+# else with it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agentic-overwatch-guardian-tokenreview
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: guardian
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agentic-overwatch-guardian-tokenreview
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: guardian
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agentic-overwatch-guardian-tokenreview
+subjects:
+  # The same sole Guardian identity. Only the Guardian verifies control-plane tokens, so only the
+  # Guardian holds the TokenReview verb. Exactly one subject, forever, on the ClusterRoleBinding above.
+  - kind: ServiceAccount
+    name: guardian
+    namespace: guardian
+---
+# ADR-128 (M10): the control-plane identity the runner authenticates AS.
+#
+# The runner mints a short-lived token for this ServiceAccount, bound to a per-run Secret it deletes at
+# run end (security-policy.md section 2.1), and presents it on `POST /v1/tokens` and `POST /v1/phase`.
+# The Guardian's ControlPlaneAuthenticator accepts it only when the TokenReview names this subject and
+# the `guardian-control-plane` audience. It carries NO RBAC binding of any kind -- it is a verifiable
+# identity and nothing else, so a token minted for it grants no cluster permission whatever, and the
+# only thing it is good for is being recognised at the Guardian's control-plane surface. The manifest
+# test asserts that nothing in this file binds a Role or ClusterRole to it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runner-control-plane
+  namespace: guardian
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: control-plane
+automountServiceAccountToken: false

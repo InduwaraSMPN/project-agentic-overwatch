@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InjectionEvent",
+  "description": "One event of a scenario's injected sequence. A line of scenarios/.replay/**/plan.jsonl carries `applied: null`; a line of a run bundle's injection.log.jsonl carries the same object with `applied` filled in. docs/plans/M5-implementation-plan.md section D1 and ADR-035 own the plan/apply split; docs/protocols/data-management.md section 1 names injection.log.jsonl the injected event sequence and section 3 requires it to match the scenario's ground-truth event count. Fields are `origin: engineering`: the submitted chapters define no injection-event format.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "injection_condition",
+    "seed",
+    "event_id",
+    "event_rank",
+    "offset_ms",
+    "kind",
+    "injection_class",
+    "mechanism",
+    "primitive_id",
+    "target",
+    "payload_id",
+    "detail",
+    "applied"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "A non-numeric token, so a consumer can only test it for membership in a known set rather than order it.",
+      "const": "v1"
+    },
+    "scenario_id": {
+      "description": "SCN-<CLASS>-<nn>, docs/07-glossary-and-ids.md section Scenario & injection IDs.",
+      "type": "string",
+      "pattern": "^SCN-(CVE|SIM)-[0-9]{2}$"
+    },
+    "injection_condition": {
+      "description": "The grid's fifth dimension. INJ-NONE is a coordinate, not an absence: see scenarios/manifests/README.md.",
+      "enum": ["INJ-NONE", "INJ-A", "INJ-B", "INJ-C", "INJ-D"]
+    },
+    "seed": {
+      "description": "The seed this plan was drawn at. The fixed seed set lives in docs/07-glossary-and-ids.md section Seeds and is deliberately NOT enumerated here (.agents/rules/00-source-of-truth.md).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "event_id": {
+      "description": "SHA-256 over the canonical projection of this event's identifying fields, lowercase hexadecimal. A digest, never a generated identifier -- the same construct monitor/aggregator/models.py fixes for EvidenceEvent, and for the same reason.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "event_rank": {
+      "description": "The planner's tie-break within one offset_ms. Third key of the total order (offset_ms, event_rank, event_id); a sort on two keys leaves ties broken by insertion order (ADR-019).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "offset_ms": {
+      "description": "Logical milliseconds from t0. The planner has no t0 to read, so no absolute time can appear in a plan -- which is what makes the determinism diff a cmp over bytes rather than a comparison that must first exclude a clock.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "kind": {
+      "description": "`incident` events fire the scenario's incident and are present under every injection condition including INJ-NONE. `injection` events carry adversarial content at the agent layer and are absent under INJ-NONE.",
+      "enum": ["incident", "injection"]
+    },
+    "injection_class": {
+      "description": "Null exactly when kind is `incident`. Bound in source order at M0-T0.7 finding 6; the A-D lettering is the kit's.",
+      "type": ["string", "null"],
+      "enum": ["INJ-A", "INJ-B", "INJ-C", "INJ-D", null]
+    },
+    "mechanism": {
+      "description": "Which harness applies this event. `chaosmesh` a fault CRD, `cve` a vulnerable-image swap, `attacker` a seeded attacker step, `workload` a benign perturbation of the target application.",
+      "enum": ["chaosmesh", "cve", "attacker", "workload"]
+    },
+    "primitive_id": {
+      "description": "References a primitive_id declared by this scenario's manifest. The manifest owns what the primitive is; the plan owns when it fires.",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "target": {
+      "description": "The object this event acts on, or null for an event with no single object. `replica_index` is drawn from the seeded generator when the workload has identical replicas (section D13).",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["namespace", "workload", "container", "replica_index"],
+      "properties": {
+        "namespace": { "type": "string", "minLength": 1 },
+        "workload": { "type": "string", "minLength": 1 },
+        "container": { "type": ["string", "null"] },
+        "replica_index": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "payload_id": {
+      "description": "The adversarial-content instance drawn from this injection class's pool, or null on an incident event. The pool lives in scenarios/attackers/content/; the id is what makes the draw auditable without the plan carrying the payload text.",
+      "type": ["string", "null"],
+      "pattern": "^INJ-[A-D]-pool-[0-9]{2}-[0-9]{3}$"
+    },
+    "detail": {
+      "description": "Per-primitive parameters. Scalars only, so a plan line stays comparable byte for byte and no nested ordering can differ between two processes.",
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$" },
+      "additionalProperties": { "type": ["string", "integer", "boolean", "null"] }
+    },
+    "applied": {
+      "description": "Null in a plan. Filled by the applier in injection.log.jsonl, and it is the only place a wall clock or a run identifier enters this record -- which is what keeps scripts/scenario_determinism.sh a cmp over whole files rather than a diff that must first hold a field out (contrast ADR-019's latency.json).",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["run_id", "applied_at", "outcome", "outcome_detail"],
+      "properties": {
+        "run_id": {
+          "description": "RUN-<COND>-<SCN>-<INJ>-<SEED>, docs/07-glossary-and-ids.md. Recorded by the applier and never read by the planner: run_id carries the arm token, and a planner that keyed its generator on it would give one cell a different attack in every arm, which is exactly the confound the ablations are taken across.",
+          "type": "string",
+          "minLength": 1
+        },
+        "applied_at": { "type": "string", "minLength": 20 },
+        "outcome": { "enum": ["applied", "failed", "skipped"] },
+        "outcome_detail": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

@@ -1,0 +1,87 @@
+# infra/cilium/values.yaml -- the Helm values for the cilium/cilium chart on this project's kind
+# cluster, applied by infra/cilium/install.sh at the chart version pinned as
+# CILIUM_CHART_VERSION in infra/versions.env. Cilium is the sole CNI here, because
+# infra/kind-config.yaml sets `disableDefaultCNI: true`; it is therefore both the thing that makes
+# pods schedulable at all and the thing whose policy engine scripts/netpol_proof.sh attributes a
+# denial to.
+#
+# THIS IS DELIBERATELY THE SMALL CONFIGURATION, NOT THE CAPABLE ONE
+#   Four keys are set below and everything else is left at the chart's own defaults. That is a
+#   decision, not laziness. Every knob turned here is a knob that can interact badly with the WSL2
+#   kernel, and R-03 in docs/06-risk-register.md is the standing risk that eBPF features will not
+#   load on this host at all. The milestone needs exactly two properties from Cilium -- pods get
+#   addresses, and NetworkPolicy is enforced -- and both are on the path Cilium's own kind
+#   installation guide walks. A configuration with more features in it would be a configuration
+#   with more ways to fail for reasons that have nothing to do with the research question.
+#
+# EVERY KEY BELOW WAS CHECKED AGAINST THE CHART'S OWN values.yaml
+#   The keys and their nesting were read from install/kubernetes/cilium/values.yaml in the Cilium
+#   source tree rather than recalled, because a misspelled Helm value is not an error: Helm accepts
+#   unknown keys silently and the chart renders as if the line had never been written, so an
+#   invented key produces a cluster that is misconfigured and a file that looks correct. Any key a
+#   future editor cannot find in the chart's values.yaml should be left out rather than guessed at.
+#
+# WHY IPAM MODE IS `kubernetes` AND NOT THE CHART DEFAULT
+#   The chart defaults `ipam.mode` to `cluster-pool`, in which the Cilium operator manages its own
+#   pod address ranges out of a CIDR that has nothing to do with the one kind configured. In
+#   `kubernetes` mode Cilium instead allocates from each node's .spec.podCIDR, which
+#   kube-controller-manager carved out of the `podSubnet` declared in infra/kind-config.yaml. That
+#   is what makes the two files agree by construction instead of by coincidence, and it is the mode
+#   Cilium's kind guide installs with.
+#
+# WHY KUBE-PROXY REPLACEMENT IS OFF
+#   infra/kind-config.yaml keeps kube-proxy, and its header records the full argument. The value
+#   has to be stated here rather than left unset because the chart's ConfigMap template fails the
+#   render outright unless kubeProxyReplacement resolves to the string "true" or "false"; the
+#   template runs the value through `toString`, so the YAML boolean below and a quoted "false"
+#   render identically. Turning this on without also setting `kubeProxyMode: none` in the kind
+#   config, and `k8sServiceHost`/`k8sServicePort` here, produces an agent that cannot reach the API
+#   server, which presents as a cluster that never becomes Ready.
+#
+# WHY THE OPERATOR RUNS ONE REPLICA
+#   The chart defaults `operator.replicas` to 2, which is right for a production cluster where the
+#   operator should survive losing a node. This cluster has two nodes, both on one WSL2 utility VM
+#   with a fixed memory allocation, and a second operator replica buys availability that nothing in
+#   the experimental design depends on while spending memory that Online Boutique, Prometheus,
+#   kube-state-metrics and Grafana all have a stronger claim on. If the operator dies, the run is
+#   invalid and gets rerun; that is a cheaper outcome than a cluster that OOMs mid-scenario.
+#
+# WHY HUBBLE IS DISABLED
+#   The chart enables Hubble by default. It is switched off here for two reasons. The first is
+#   memory: Hubble Relay and its UI are additional workloads on a cluster already sized to its
+#   limit, and this milestone has no budget for them. The second is that the observability they
+#   would provide is not needed -- attribution in scripts/netpol_proof.sh comes from
+#   `cilium-dbg monitor --type drop` read directly out of the agent pod on the server's node, which
+#   is the agent's own datapath event stream and needs no additional component to be running, and
+#   the framework's own evidence pipeline is monitor/, not Hubble. Enabling Hubble later is an
+#   additive change that breaks nothing here, but it should arrive with the milestone that has a
+#   use for it rather than as a default nobody chose.
+#
+# WHAT IS DELIBERATELY NOT SET
+#   No `k8sServiceHost` or `k8sServicePort`, because those are only required when kube-proxy is
+#   replaced. No tunnel or routing-mode override, leaving the chart's default encapsulation, which
+#   is what the kind guide relies on. No bandwidth manager, no L7 proxy tuning, no BPF map sizing:
+#   each is a plausible-looking knob whose effect on this kernel is unverified, and an unverified
+#   knob in a reproducibility artefact is worse than an absent one.
+
+# Pod addressing comes from each node's .spec.podCIDR, which kind derived from the `podSubnet` in
+# infra/kind-config.yaml. Chart default is "cluster-pool"; see WHY IPAM MODE above.
+ipam:
+  mode: kubernetes
+
+# kube-proxy is kept. See infra/kind-config.yaml and WHY KUBE-PROXY REPLACEMENT IS OFF above.
+kubeProxyReplacement: false
+
+# Two-node lab cluster on a memory-bounded WSL2 VM. Chart default is 2.
+operator:
+  replicas: 1
+
+# Chart default is true. See WHY HUBBLE IS DISABLED above.
+hubble:
+  enabled: false
+
+# Chart default is already IfNotPresent; stated so that a re-run of infra/cilium/install.sh over an
+# already-installed cluster does not re-pull the agent image, which on a metered or slow connection
+# is the difference between an idempotent install and a five-minute one.
+image:
+  pullPolicy: IfNotPresent

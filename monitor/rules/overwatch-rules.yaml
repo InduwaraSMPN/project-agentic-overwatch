@@ -1,0 +1,138 @@
+# Project-owned Falco rules for the detection labels used by the scenario corpus.
+# Loaded through the Falco 8.0.1 chart's customRules map. These rules deliberately
+# set no rate/noise threshold: live characterization and protocol-owned limits are
+# separate M2 work and must not be guessed from synthetic fixtures.
+
+- list: overwatch_sensitive_paths
+  items:
+    - /etc/shadow
+    - /etc/gshadow
+    - /etc/sudoers
+    - /var/run/secrets/kubernetes.io/serviceaccount/token
+    - /run/secrets/kubernetes.io/serviceaccount/token
+
+# Project-local equivalents of the default ruleset macros. The default ruleset is intentionally
+# not loaded because its container-plugin requirement crashes on Docker Desktop's kind/containerd.
+- macro: spawned_process
+  condition: evt.type in (execve, execveat)
+
+- macro: open_read
+  condition: evt.type in (open, openat, openat2) and evt.is_open_read=true
+
+# The same credential file, reached through another process's root.
+#
+# `fd.name in (...)` is exact-string membership, and the seeded primitives do not open the
+# canonical path. `kubectl debug` shares the target's PID and network namespaces but NOT its mount
+# namespace, so a debug container can only reach the target's filesystem through /proc: both
+# `sa-token-escalation` and `secret-enumeration` glob
+# `/proc/[0-9]*/root/var/run/secrets/kubernetes.io/serviceaccount/token`
+# (`scenarios/attackers/apply.py`, `_SA_READ_PREFIX`). That is not one of the five literals, so
+# rule 2 could never fire for either primitive however the scope clause was settled -- ADR-059
+# decision 4 cites the list as though it would. Reading a credential through `/proc/<pid>/root/`
+# is the same read of the same inode, so it is the same detection, and the glob is per listed path
+# rather than a bare suffix match so the rule still names exactly which files it protects.
+- macro: overwatch_sensitive_path_read
+  condition: >
+    fd.name in (overwatch_sensitive_paths) or
+    fd.name glob "/proc/*/root/etc/shadow" or
+    fd.name glob "/proc/*/root/etc/gshadow" or
+    fd.name glob "/proc/*/root/etc/sudoers" or
+    fd.name glob "/proc/*/root/var/run/secrets/kubernetes.io/serviceaccount/token" or
+    fd.name glob "/proc/*/root/run/secrets/kubernetes.io/serviceaccount/token"
+
+# Scope every rule to processes that belong to a pod of THIS kind cluster.
+#
+# modern_ebpf observes the whole Docker Desktop VM kernel, not the kind node. Without this macro
+# Falco reported processes from unrelated containers on the same host -- another kind cluster, and
+# a developer's own database containers -- into the run's evidence. That is noise the agent layer
+# then tries to investigate, and it can carry third-party identifiers into a sealed bundle.
+#
+# A process is in scope only when the container plugin resolved it through this node's CRI socket
+# (infra/monitor/falco-values.yaml) to a Kubernetes namespace. Anything the plugin cannot resolve
+# -- host processes, other clusters' containers, plain Docker containers -- carries no k8s.ns.name
+# and is dropped. The scenario corpus attacks from inside pods, so no scenario signal is lost.
+#
+# `k8s.ns.name exists` is the load-bearing half, and became so with ADR-072. Under the containerd
+# engine an unresolvable process reported `container.id=host`, so the first clause did the work --
+# and did it to EVERY syscall event, which is the defect ADR-068 recorded. Under the CRI engine a
+# foreign container (the second kind cluster on this host, a plain Docker container) resolves a
+# real container id and still carries no namespace, so it is the second clause that drops it. Both
+# clauses stay: the first is what excludes genuine host processes, which have no container at all.
+# The measurement apparatus does not observe itself.
+#
+# `monitor` holds Falco, Falcosidekick, the evidence aggregator and the audit forwarder. Once
+# ADR-072 repaired syscall attribution, 13 of the first 18 syscall alerts were Falcosidekick reading
+# its own service-account token: the instrument tripping its own rule. That is an artifact of how
+# this deployment is instrumented, not a property of the environment under study, and it spends the
+# Orchestrator's evidence budget on the Monitor's own telemetry -- the drowning ADR-064 fixed on the
+# audit side, where the fix was narrowing rather than blinding.
+#
+# Excluded BY NAMESPACE rather than by process name. The `not proc.name in (kubelet, systemd,
+# systemd-resolve)` on rule 2 below is the fragile form: a renamed binary defeats it. A namespace is
+# the stable identifier.
+#
+# `kube-system` and `chaos-mesh` are deliberately NOT excluded. `sa-token-escalation` and
+# `secret-enumeration` exist to test whether the framework catches an attacker leaving the workload
+# namespace, so blinding the Monitor there would make a run where the attacker escaped
+# indistinguishable from one where it did not -- a truncated signal, not a cleaner one. This answers
+# the question ADR-057's alternatives left open ("Namespace-allowlist the rules to `boutique` ... it
+# is pending") and answers it with the narrower cut; ADR-073 records why.
+- list: overwatch_instrument_namespaces
+  items:
+    - monitor
+
+- macro: overwatch_cluster_workload
+  condition: >
+    container.id != host and k8s.ns.name exists and
+    not k8s.ns.name in (overwatch_instrument_namespaces)
+
+- macro: overwatch_container_shell
+  condition: >
+    spawned_process and
+    proc.name in (ash, bash, dash, fish, ksh, sh, tcsh, zsh)
+
+- rule: Terminal shell in container
+  desc: A shell process started with a terminal inside a container
+  condition: overwatch_container_shell and proc.tty != 0 and overwatch_cluster_workload
+  output: >
+    A shell was spawned in a container with an attached terminal
+    (evt_type=%evt.type user=%user.name user_uid=%user.uid proc_exepath=%proc.exepath
+    proc_cmdline=%proc.cmdline)
+  priority: WARNING
+  tags: [container, shell, mitre_execution, T1059]
+
+- rule: Read sensitive file untrusted
+  desc: A process opened a credential-bearing operating-system or service-account file for reading
+  condition: >
+    open_read and
+    overwatch_sensitive_path_read and
+    not proc.name in (kubelet, systemd, systemd-resolve) and
+    overwatch_cluster_workload
+  output: >
+    Sensitive file opened for reading by non-trusted program
+    (file=%fd.name pcmdline=%proc.pcmdline evt_type=%evt.type user=%user.name
+    user_uid=%user.uid proc_exepath=%proc.exepath)
+  priority: ERROR
+  tags: [filesystem, mitre_credential_access, T1555]
+
+- rule: Launch Privileged Container
+  desc: A container starts with privileged mode enabled
+  condition: evt.type=container and container.privileged=true and overwatch_cluster_workload
+  output: >
+    Privileged container started
+    (evt_type=%evt.type user=%user.name proc_exepath=%proc.exepath)
+  priority: CRITICAL
+  tags: [container, cis, mitre_privilege_escalation, T1610]
+
+- rule: Unexpected outbound connection destination
+  desc: A container initiated an IPv4 connection outside cluster, loopback, link-local, and private ranges
+  condition: >
+    evt.type=connect and fd.typechar=4 and
+    not fd.rnet in (10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16,
+                    172.16.0.0/12, 192.168.0.0/16) and
+    overwatch_cluster_workload
+  output: >
+    Outbound connection to a host outside the cluster CIDR
+    (connection=%fd.name evt_type=%evt.type proc_cmdline=%proc.cmdline)
+  priority: NOTICE
+  tags: [network, mitre_command_and_control, T1071]

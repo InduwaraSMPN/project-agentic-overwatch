@@ -1,0 +1,30 @@
+# Templated from guardian/deploy/deployment.yaml's PersistentVolumeClaim (the audit chain and
+# the replay-cache SQLite file both live here). Size and storage class are the only
+# parameterized fields.
+#
+# helm.sh/resource-policy: keep -- `helm uninstall` must NOT delete this claim. It holds the
+# Guardian's hash-chained audit log, forensic evidence that has to outlive the release that
+# happened to create it; an unsigned chain deleted with the PVC is unrecoverable and no other
+# copy exists outside what an operator has already extracted (docs/ops/runbook.md section 2.4).
+# The consequence, documented in runbook section 5.3/5.6: a later re-install into the same
+# namespace finds this claim already present and unmanaged, and either reuses it deliberately or
+# the operator deletes it on purpose first -- retention of forensic data is worth that friction.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: guardian-audit
+  namespace: {{ .Values.namespaces.guardian }}
+  annotations:
+    "helm.sh/resource-policy": keep
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/name: guardian
+    app.kubernetes.io/component: guardian
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.guardian.audit.storageClassName }}
+  storageClassName: {{ .Values.guardian.audit.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.guardian.audit.pvcSize }}

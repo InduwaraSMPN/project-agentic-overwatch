@@ -1,0 +1,55 @@
+Agentic Overwatch -- {{ .Chart.Name }} {{ .Chart.Version }} (packaging overlay on frozen v1.0)
+
+Deployed into:
+  guardian namespace:  {{ .Values.namespaces.guardian }}
+  monitor namespace:   {{ .Values.namespaces.monitor }}
+  agents namespace:    {{ .Values.namespaces.agents }}
+  Guardian mode:       {{ .Values.guardian.mode }}
+  Agent API-server reach: {{ .Values.agents.networkPolicy.apiServerReach }}
+
+BEFORE THIS INSTALL COULD SUCCEED, two things had to already be true (this chart does not
+create either of them, deliberately -- see docs/adr/ADR-113-helm-chart-packaging.md):
+
+  1. A Kubernetes cluster with Cilium as the sole CNI (infra/cilium/), so the
+     CiliumNetworkPolicy objects this chart installs actually enforce. On a cluster without
+     Cilium CRDs, the CiliumNetworkPolicy in the agents namespace fails to apply -- loudly,
+     which is the correct failure (nothing half-applied).
+  2. The `{{ .Values.namespaces.boutique }}` namespace already exists, with the target
+     application deployed into it (infra/boutique/, applied separately via
+     `kubectl apply -k infra/boutique`, or `make up`). Guardian's namespaced Role/RoleBinding
+     target that namespace and were not created by this chart.
+
+REQUIRED SECRETS (never created by this chart -- see docs/ops/secrets.md for the authoritative
+name/key list and rotation procedure):
+
+  * {{ .Values.guardian.signingKey.secretName }} / key "{{ .Values.guardian.signingKey.secretKey }}"
+    in the {{ .Values.namespaces.guardian }} namespace. The Guardian's JWS signing key. Create
+    it out of band, e.g.:
+      kubectl -n {{ .Values.namespaces.guardian }} create secret generic {{ .Values.guardian.signingKey.secretName }} \
+        --from-literal={{ .Values.guardian.signingKey.secretKey }}="$(openssl rand -base64 48)"
+    Guardian refuses to start without it, exactly as it does outside this chart.
+
+  * {{ .Values.agents.modelProvider.secretName }} (keys {{ .Values.agents.modelProvider.apiKeySecretKey }}, {{ .Values.agents.modelProvider.baseUrlSecretKey }})
+    is a reserved/documented name only, matching docs/ops/secrets.md's chart-facing contract --
+    no template in this chart wires it into a pod, because the model-provider credential is
+    currently consumed on the host by the runner (agents/README.md), not by an in-cluster
+    workload. Reserved for the milestone that first deploys an in-cluster agent workload.
+
+GUARDIAN MODE. GUARDIAN_MODE={{ .Values.guardian.mode }} reached the Guardian only through this
+release's guardian-runtime ConfigMap, exactly the mechanism scripts/guardian_deploy.sh already
+uses (guardian/app/config.py reads it once at process start). No Guardian source file or Rego
+policy was edited or forked to produce this mode. To move from shadow (G1-LOGONLY) to enforce
+(G0-FULL) per the T8.5 rollout guide, set guardian.mode and `helm upgrade`; Guardian's own
+Deployment performs a normal rolling restart under the new ConfigMap.
+
+THIS CHART DOES NOT DRIVE THE EVALUATION CAMPAIGN. scripts/guardian_deploy.sh continues to
+redeploy Guardian per run attempt for the frozen v1.0 campaign harness, unchanged by this
+chart's existence. This chart targets a standing/shadow-mode operator deployment (M8
+"customer-delivery overlay"), a separate operational mode from the per-attempt evaluation
+harness -- see docs/adr/ADR-113-helm-chart-packaging.md.
+
+VERIFY THE DEPLOYMENT:
+  kubectl -n {{ .Values.namespaces.guardian }} rollout status deployment/guardian
+  kubectl -n {{ .Values.namespaces.monitor }} rollout status deployment/evidence-aggregator
+  kubectl -n {{ .Values.namespaces.monitor }} rollout status deployment/audit-forwarder
+  kubectl -n {{ .Values.namespaces.agents }} get networkpolicy,ciliumnetworkpolicy

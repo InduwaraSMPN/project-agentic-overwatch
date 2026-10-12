@@ -1,0 +1,14 @@
+# Templated from monitor/deploy/config.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: evidence-aggregator-config
+  namespace: {{ .Values.namespaces.monitor }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: monitor
+data:
+  MONITOR_HTTP_HOST: "0.0.0.0"
+  MONITOR_HTTP_PORT: {{ .Values.monitor.aggregator.port | quote }}
+  MONITOR_DATA_DIR: {{ printf "%s/aggregator" .Values.monitor.evidence.hostPath | quote }}
+  MONITOR_QUOTING_ENABLED: {{ .Values.monitor.aggregator.quotingEnabled | quote }}

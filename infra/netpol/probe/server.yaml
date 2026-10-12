@@ -1,0 +1,144 @@
+# infra/netpol/probe/server.yaml -- the target half of the NetworkPolicy enforcement proof: a pod
+# that answers HTTP 200, and the ClusterIP Service that gives it a DNS name. Applied by
+# scripts/netpol_proof.sh after the NODE_NAME_PLACEHOLDER token below has been substituted. Part of
+# milestone task M1-T1.1; see infra/netpol/probe/namespace.yaml for the scope boundary.
+#
+# WHY NODE_NAME_PLACEHOLDER AND A sed SUBSTITUTION
+#   The proof runs twice, once with client and server on the same node and once with them on
+#   different nodes, so the node this pod lands on is an input rather than a property of the file.
+#   It cannot be committed, either: kind derives node names from the cluster name, so a cluster
+#   created with a name other than the default has no node called kind-worker, and a hardcoded
+#   name would work on one developer's machine and not the next. The proof script discovers the
+#   real names from the API server and substitutes them.
+#
+#   The substitution is a plain sed over this file into a temporary copy. Three alternatives were
+#   rejected. A kubectl patch cannot do it at all: spec.nodeSelector is part of the immutable
+#   region of a Pod spec, so it can only be set at creation, and an attempt to change it afterwards
+#   is rejected by the API server. envsubst is not in POSIX and is absent from a plain dash
+#   environment, which would make the proof unrunnable in the shell it is written for. A Kustomize
+#   overlay would introduce a build step and a second templating system for exactly one string, and
+#   would stop these files being manifests a human can read and apply directly. A visible token in
+#   a plain manifest is the smallest thing that works, and it fails loudly rather than silently --
+#   an unsubstituted file is rejected outright, because NODE_NAME_PLACEHOLDER is not a valid label
+#   value.
+#
+#   Node names are DNS-1123 subdomains, so they contain only lowercase letters, digits, dots and
+#   hyphens. None of those is a sed replacement metacharacter, which is what makes the plain
+#   substitution safe without quoting gymnastics.
+#
+# WHY agnhost
+#   registry.k8s.io/e2e-test-images/agnhost is the image Kubernetes' own end-to-end network tests
+#   are built on, and it is the right choice here for four reasons. It serves HTTP from its netexec
+#   subcommand with no configuration file, no volume and no entrypoint script, so there is nothing
+#   between "the pod is Ready" and "the port answers". It also ships a real curl, which means one
+#   image covers both halves of the proof and the client and the server cannot drift onto different
+#   base images -- and a real curl is not incidental, because the whole denial assertion is a claim
+#   about curl's exit status, which only libcurl's own exit codes can support. It sits on
+#   registry.k8s.io rather than Docker Hub, so a bring-up on a CI runner or a shared network is not
+#   subject to anonymous pull-rate limits, which is a live failure mode for kind clusters. And it
+#   is small enough that pulling it twice, once per node, costs nothing worth optimising.
+#
+#   The nginx alternative was rejected: it would have served HTTP just as well but carries no curl,
+#   so the client would have needed a second image, and the obvious client images live on Docker
+#   Hub and reintroduce the rate limit.
+#
+# WHY THE IMAGE TAG IS WRITTEN HERE RATHER THAN IN infra/versions.env
+#   Every version in this repository lives in infra/versions.env, and this is a deliberate, narrow
+#   exception rather than an oversight. That file's rule 2 makes its key set an M0 interface
+#   contract and its rule 3 requires an ADR for adding a key, and what would be added is not a
+#   component of the evaluated stack: this image never runs in an experimental condition, produces
+#   no measurement, and appears in no run bundle. It is test-fixture scaffolding for one proof
+#   script, in the same category as a unit test's fixture data. The tag is pinned anyway, because a
+#   floating tag in a proof is a proof that can change meaning without a commit. If the supervisor
+#   decides that even fixture images belong in the pin file, the move is a key plus an ADR and
+#   nothing here changes but this comment.
+#
+#   2.53 is chosen over the newest tag because it is the agnhost version referenced by released
+#   Kubernetes minors, which is the strongest available evidence that it is actually published and
+#   widely mirrored; the newest tag in the Kubernetes source tree can be ahead of what has been
+#   pushed. Nothing in this proof uses an agnhost feature newer than netexec, pause and the bundled
+#   curl, all of which long predate it.
+#
+# WHY THERE IS A SERVICE AND THE PROOF DOES NOT CURL THE POD IP
+#   Curling the pod IP directly would work and would be one object fewer. A Service is used because
+#   it puts a DNS lookup in front of every request, and the denial assertion is specifically that
+#   curl exits 28 and not 6. Exit 6 is "could not resolve host", and asserting its absence is only
+#   meaningful if resolution was actually attempted. The default-deny policy in this namespace
+#   selects this pod alone and restricts only its ingress, so CoreDNS in kube-system is untouched
+#   and a DNS failure during the denial step would be a genuine resolver defect rather than an
+#   artefact of the test -- which is exactly the discrimination the assertion exists to make.
+#
+# WHY THE READINESS PROBE IS SLOW TO FAIL
+#   The probe has a two-second period and a failure threshold of sixty, giving roughly two minutes
+#   of grace before a pod that stops answering is marked NotReady. That asymmetry is deliberate.
+#   Kubelet probes originate in the node's host namespace, and although Cilium by default exempts
+#   host-to-local-endpoint traffic from policy, the proof must not rest on that default: if the
+#   default-deny policy did block the probe, the pod would go NotReady, the Service would lose its
+#   endpoint, and the client's connection would be answered with a reset instead of being dropped.
+#   The proof would then observe curl exit 7 rather than 28 and report a listener problem, which
+#   would be a true statement about what it saw and a false account of why. A grace window far
+#   longer than the denial step takes removes that coupling entirely, so the failure mode the proof
+#   observes belongs to the policy and to nothing else. Readiness is still fast on the way up,
+#   which is what the positive control needs.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Removing the label below detaches the Service and the NetworkPolicy from this pod, and a policy
+#   that selects nothing denies nothing, which is a green proof of an untested claim. Removing the
+#   Service removes the DNS step and with it the meaning of the "not exit 6" assertion. Lowering
+#   the failure threshold reintroduces the readiness coupling described above.
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: netpol-probe-server
+  namespace: netpol-probe
+  labels:
+    # This label is the join between three files: the Service selector below, the NetworkPolicy
+    # podSelector in deny-ingress.yaml, and nothing else. Changing it means changing both.
+    app.kubernetes.io/name: netpol-probe-server
+spec:
+  # Substituted by scripts/netpol_proof.sh with a node name discovered from the API server. An
+  # unsubstituted manifest is rejected on apply, which is the intended loud failure.
+  nodeSelector:
+    kubernetes.io/hostname: NODE_NAME_PLACEHOLDER
+  # The proof deletes and recreates this pod between its two cases, because nodeSelector is
+  # immutable. Zero grace makes that turnaround immediate rather than a thirty-second wait, and
+  # nothing here holds state worth draining.
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: server
+      image: registry.k8s.io/e2e-test-images/agnhost:2.53
+      # netexec serves HTTP on --http-port, and "/" returns the request timestamp with status 200,
+      # which is the response the positive control and the reversal step both assert.
+      args:
+        - netexec
+        - --http-port=8080
+      ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+      readinessProbe:
+        httpGet:
+          path: /
+          port: 8080
+        periodSeconds: 2
+        timeoutSeconds: 2
+        successThreshold: 1
+        # See WHY THE READINESS PROBE IS SLOW TO FAIL above before lowering this.
+        failureThreshold: 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netpol-probe-server
+  namespace: netpol-probe
+spec:
+  # ClusterIP by omission. A NodePort would expose the fixture outside the cluster for no gain, and
+  # a headless Service would skip the Service translation the cross-node case is meant to exercise.
+  selector:
+    app.kubernetes.io/name: netpol-probe-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

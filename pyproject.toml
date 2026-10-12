@@ -1,0 +1,103 @@
+# Python project metadata and the single home for the repository's lint configuration.
+#
+# The package is never published or installed; this file exists so that ruff, and any later
+# Python tooling, reads one configuration from one place. Runtime dependencies are pinned by the
+# component that introduces them, together with the ADR that justifies it, so `dependencies`
+# stays empty here rather than becoming a second version-pinning surface alongside
+# infra/versions.env.
+
+[project]
+name = "agentic-overwatch"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.ruff]
+# 100 columns matches the prose wrap width used throughout docs/, so code and its surrounding
+# documentation stay readable side by side in the same editor width.
+line-length = 100
+target-version = "py312"
+# Pinned so that a failure reads identically in a local terminal and in the CI log; the default
+# output format is resolved from the environment and would differ between the two.
+output-format = "full"
+# src names the component directories from AGENTS.md's "Where things go" table, plus scripts/,
+# so import sorting (I) resolves first-party modules correctly once each component holds code.
+src = ["infra", "monitor", "guardian", "agents", "scenarios", "runner", "analysis", "scripts"]
+# context/ is read-only dissertation ground truth and runs/ holds generated run bundles; neither
+# is this repository's code to lint or format.
+#
+# *.md is excluded for a different reason, and the asymmetry is the point. `ruff check` already
+# ignores Markdown -- `ruff check --show-files .` lists only this file and the one .py script --
+# but `ruff format` claims every .md file in the tree, so without this line a Python formatter is
+# a blocking gate on the entire documentation kit. That gate passes today and buys nothing: this
+# repository holds exactly one Python source file, and prose wrapping is reviewed by humans. What
+# it costs is a failure mode nobody would recognise -- a ruff release that changes how Markdown is
+# handled turns a docs-only pull request red, in the `lint` job, for a reason unrelated to the
+# change under review. Excluding *.md scopes `make lint` and CI's lint job to the Python surface
+# they exist to police. If a Markdown formatter is ever wanted it gets its own tool, its own gate
+# and its own ADR, rather than arriving as a side effect of a version bump.
+extend-exclude = ["context", "runs", "*.md"]
+# By default ruff applies the exclusions above only when it walks a directory: a path named
+# explicitly on the command line is formatted regardless. That would leave the exclusion holding
+# for `ruff format --check .`, which is what scripts/lint.sh runs, and silently not holding for
+# any future hook, editor integration or one-off invocation that passes a file path. force-exclude
+# makes the excluded set mean the same thing however ruff is called.
+force-exclude = true
+
+[tool.ruff.lint]
+# S (flake8-bandit) is ENABLED as of M3, and the paragraph this replaces is worth keeping in view
+# because it named the condition under which enabling would be right. It read: "S is deliberately
+# not enabled yet. It fires on every `subprocess` call, which the runner will make constantly once
+# it drives the cluster, and turning it on now would force a wave of `noqa` comments before the
+# design call about how the runner shells out has even been made. Enabling S is an M3/M6 decision
+# and gets its own ADR when it is taken."
+#
+# M3 is that milestone, and the argument for taking the decision now rather than deferring it to
+# M6 is the component M3 builds. The Guardian is the artefact's central security claim: a
+# hardcoded secret, a weak hash, an unsafe deserialisation or a permissive JWT verification there
+# is not a code-quality nit but a defeat of the property the whole study measures. Turning the
+# security linter on at the security component is the natural point, and running it for the first
+# time on the Guardian's own first commit is worth more than running it later on a larger surface.
+#
+# The subprocess concern the old paragraph raised is untouched: nothing under runner/ exists yet,
+# and M6 still owns the design call about how it shells out. What M6 inherits is a rule that is
+# already on, so its decision is about how to satisfy S603/S607 rather than about whether to look.
+#
+# Enabling it surfaced four real findings, none of them noise, all in M1's instrument code:
+# `urllib.request` honours every scheme its opener knows, `file:` included, and the URLs reaching
+# it there are operator-supplied. Both call sites now validate the scheme before opening and carry
+# a `noqa` that points at the validation. That is what a security linter is for, and suppressing
+# rather than fixing would have been the wrong answer to a question that had a real answer.
+# ADR-026 records the decision and the alternatives.
+select = ["E", "F", "I", "B", "UP", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# S101 is `assert`, which is what a test is made of. pytest rewrites bare asserts to produce its
+# diagnostics, so a test suite that avoided them would be trading every failure message for a rule
+# that was never aimed at test code in the first place.
+#
+# This is deliberately NOT a hole. The ignore is scoped to the three test directories by path and
+# to S101 by name, so every other bandit rule still applies inside them -- a hardcoded credential
+# or an unsafe deserialisation in a test file is still an error. That matters more here than in
+# most repositories: the Guardian's adversarial suite is where a test fixture carrying a real-looking
+# secret would be most tempting and most damaging, and `guardian/tests/**` is exactly the path this
+# line touches. It grants one rule, not a directory.
+#
+# The list is extended one directory at a time, by name, and never collapsed into a `*/tests/**`
+# glob. ADR-026's Decision requires the directories be named individually, and its Consequences
+# predicted this exact edit: "The `per-file-ignores` list has to be extended when a component with
+# tests is added ... That is intended friction." M4 adds agents/tests/**, which is the first time
+# that prediction comes due. The friction buys the property the paragraph above claims: a glob
+# would grant S101 to any future directory whose path happened to end in tests/, including one
+# nobody reviewed, whereas a named entry means a person decided that this suite may assert. M5 adds
+# scenarios/tests/** on the same rule, one named line rather than a widened glob.
+"infra/tests/**" = ["S101"]
+"monitor/tests/**" = ["S101"]
+"guardian/tests/**" = ["S101"]
+"agents/tests/**" = ["S101"]
+"scenarios/tests/**" = ["S101"]
+"runner/tests/**" = ["S101"]
+"analysis/tests/**" = ["S101"]
+
+[tool.pytest.ini_options]
+norecursedirs = ["infra/observability/langfuse/volumes"]

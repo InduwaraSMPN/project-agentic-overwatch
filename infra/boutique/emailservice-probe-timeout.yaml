@@ -1,0 +1,45 @@
+# infra/boutique/emailservice-probe-timeout.yaml -- raises emailservice's gRPC liveness and
+# readiness probe timeout from the upstream 1s to 5s, and NOTHING else.
+#
+# WHY THIS ONE DEVIATION FROM THE STOCK BASE
+#   Online Boutique's base gives emailservice a 128Mi memory limit and gRPC health probes with
+#   `timeoutSeconds: 1`. emailservice is a Python gRPC service, and 128Mi is tight enough that its
+#   health RPC intermittently takes longer than 1s to answer on a loaded kind node -- long enough
+#   for three consecutive liveness failures, after which the kubelet kills the container (exit 137,
+#   terminated reason "Error", NOT OOMKilled: the app has started and is listening, the probe simply
+#   did not get an answer in time). The pod then CrashLoopBackOffs and env-bring-up never reaches
+#   `make status` green. recommendationservice, the same probe config but a 450Mi limit, does not
+#   hit this. Observed 2026-09-27 on the VM bring-up (ADR-140).
+#
+# WHY THE PROBE TIMEOUT AND NOT THE MEMORY
+#   Two ways close the gap: give the container more memory so the RPC answers within 1s, or give the
+#   probe more time to wait. The first changes the application's resource envelope -- a property the
+#   RQ4 overhead and interference measures read -- and makes the container non-stock in a way a
+#   reader would have to account for. The second changes only how patient Kubernetes is about a
+#   health check; it does not touch the app, its image, its limits or its behaviour, so the target
+#   application stays stock Online Boutique in every respect the study measures. 5s is the same
+#   order as the base's own `periodSeconds: 5` and is generous for a health RPC that already
+#   answers, just slowly under memory pressure. This is the minimal instrument delta that fixes the
+#   bring-up; ADR-140 records the choice and the rejected memory-bump alternative.
+#
+# STRATEGIC MERGE, KEYED ON THE CONTAINER NAME
+#   The container is `server` (the name the base gives it, and the name that appears in the
+#   kubelet's `spec.containers{server}` probe events). Kustomize merges this document into the
+#   base's emailservice Deployment by kind+name, and merges the container list by the `name` key, so
+#   only `livenessProbe.timeoutSeconds` and `readinessProbe.timeoutSeconds` change; every other
+#   field of the probe and the container is the base's. A rename of the container upstream turns this
+#   into a patch that adds a second container, which the M1 readiness check would surface as a
+#   pod that never becomes ready -- loud, not silent.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emailservice
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          livenessProbe:
+            timeoutSeconds: 5
+          readinessProbe:
+            timeoutSeconds: 5

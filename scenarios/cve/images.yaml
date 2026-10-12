@@ -1,0 +1,263 @@
+# scenarios/cve/images.yaml -- the digest pins and mirror record for every known-vulnerable
+# container image the CVE arm of the scenario suite admits into the boutique namespace. This is the
+# file infra/versions.env's CVE_IMAGE_DIGESTS_FILE names, and it follows the precedent M1 set with
+# BOUTIQUE_IMAGE_DIGESTS_FILE: versions.env rule 1 is "values only", so a set of digests is named
+# from there and lives here.
+#
+# ADR-091 SUPERSEDES ADR-079: adservice, NOT A SIDECAR, IS THE TARGET
+#   Both entries below replaced ADR-079's `cve-lab` sidecar entries (a Solr image added beside an
+#   unrelated Boutique server, its command overridden so it never actually ran). The supervisor
+#   rejected that design outright: "An image that cannot serve its host service's protocol is not
+#   an admissible design" (docs/plans/supervisor-rulings-2026-09-13.md, ruling B1), and ADR-079's own
+#   sidecar carried no protocol and no traffic path at all -- it was a `sleep infinity` placeholder.
+#   The design here is the other admissible option that ruling names: "a vulnerable build of the
+#   SAME service", so `component` and `container` below name adservice's own real, serving
+#   container -- not a decoration beside it. adservice is the only Java service in this Boutique
+#   deployment (OpenJDK; `org.apache.logging.log4j:log4j-core` is a direct compile dependency of
+#   `src/adservice/build.gradle` at the pinned upstream ref, confirmed by reading that file at
+#   https://github.com/GoogleCloudPlatform/microservices-demo/blob/v0.10.6/src/adservice/build.gradle
+#   -- version 2.26.1 there today), so it is the one workload a Log4Shell build can honestly stand
+#   in for without inventing a vulnerability the service's own dependency graph could not carry.
+#   `scenarios/cve/adservice/README.md` carries the build recipe; ADR-091 carries the full argument
+#   and the operator steps.
+#
+# WHY BOTH ENTRIES NAME THE SAME IMAGE (researcher/supervisor decision, 2026-09-13)
+#   SCN-CVE-04 and SCN-CVE-05 admit the identical vulnerable adservice build -- same repository, same
+#   tag, same digest once Tier B resolves it. They are two catalog rows rather than one because every
+#   reader of this file to date (scenarios/tests/test_primitive_refs.py, the applier's
+#   `_load_cve_entry`, the Guardian's `_image_body`) resolves a primitive's `ref` to exactly one entry
+#   whose own `scenario_id` field must equal the manifest naming it -- there is no "shared entry"
+#   shape in that contract, and widening it is a larger change than this corpus needs for two rows
+#   that agree on every field except `id`, `scenario_id`, `tarball` and the prose. What varies between
+#   the two scenarios is never the image: it is where each scenario's incident stops. SCN-CVE-04 is
+#   scan-first and never exploits the build; SCN-CVE-05 reaches the vulnerable library over adservice's
+#   own gRPC edge before the scan lands. "The same class of artefact reaches the namespace in both,
+#   and the two scenarios differ in which side of the scan cadence the incident lands on" --
+#   scenarios/manifests/SCN-CVE-05.yaml's own header, unchanged by this redesign because the sentence
+#   was never about which service carried the artefact.
+#
+# WHY THE CONTAINER IS `server`, NOT A NEW NAME
+#   adservice's Deployment (kubernetes-manifests/adservice.yaml at the pinned ref, and the live cluster
+#   checked 2026-09-13: `kubectl -n boutique get deployment adservice -o
+#   jsonpath='{.spec.template.spec.containers[0].name}'` -> `server`) names its sole container `server`,
+#   the same convention cartservice, checkoutservice, frontend and every other Boutique service in this
+#   tree already use (ADR-059's own line: "The target container is `server` on every attacker
+#   primitive"). Naming it here as anything else would make this the one entry that disagrees with the
+#   Deployment it patches. There is no sidecar and nothing beside `server` for these two entries to
+#   name.
+#
+# WHY THIS FILE CANNOT, BY ITSELF, MAKE THE SWAP SERVE THE PROTOCOL
+#   scenarios/attackers/apply.py's `_set_image` and guardian/app/executor.py's `_image_body` both
+#   unconditionally append `"command": ["sh", "-c", "trap : TERM INT; sleep infinity & wait"]` to the
+#   patched container, a placeholder that was correct for a sidecar nobody was meant to run and is
+#   fatal here: it would replace `server`'s command and adservice would never start its gRPC listener,
+#   however correct the image reference in this file is. Neither file is owned by this stream (apply.py
+#   is stream S's; guardian/** is never edited outside stream G on rule 10's own precedent), so the
+#   fix is reported rather than made here -- see ADR-091's Operator and Integration sections for the
+#   exact diff each needs. This file's entries are written for the corrected code, not the code as it
+#   stands today; until that lands, `_set_image` would silence adservice's protocol on admission and
+#   `_image_body` would silence it again on rollback, and every CVE run would fail its own containment
+#   and verified-recovery assertions for a reason this file's digests cannot fix.
+#
+# A TAG IS NOT A PIN, AND A PIN IS NOT AVAILABILITY
+#   The first half is the argument infra/boutique/images.yaml makes and it holds here unchanged: a
+#   registry tag is a mutable pointer, nothing prevents the same tag resolving to different bytes
+#   next month, and nothing in a sealed run bundle would record that it had. A digest is the content
+#   hash of the image manifest itself, so name@sha256:... either resolves to those exact bytes or
+#   fails to resolve at all. NFR1's clean-machine reproducibility and provenance row T-15 both rest
+#   on two runs weeks apart having executed the same software, and only a digest makes that
+#   checkable.
+#
+#   The second half is a correction, and it is the reason this header is not simply a copy of that
+#   one. A digest pin survives TAG MUTATION; it does not survive DELETION. What a digest buys is
+#   immutability, not availability, and the two are different properties with different failure modes
+#   and different remedies (M5-C5). Here that exposure is smaller than ADR-079's Solr entries carried
+#   -- this image is built and pushed by this project's own operator into a registry of their choosing,
+#   not pulled from a third party with its own incentive to withdraw a known-vulnerable tag -- but it
+#   is not zero: the operator's own registry can still lose the manifest, so the mirror mechanism below
+#   is unchanged.
+#
+# THREE MECHANISMS FOR THREE PROBLEMS
+#   They are separate because they solve separate problems, and no one of them substitutes for
+#   another:
+#
+#     identity      CVE_IMAGE_DIGESTS_FILE in infra/versions.env. A plain key with a plain value,
+#                   naming this file, exactly as BOUTIQUE_IMAGE_DIGESTS_FILE names its own. It says
+#                   WHICH set of images the CVE arm runs, and it is inside versions_env_sha256, so
+#                   pointing the campaign at a different set is a change every sealed bundle
+#                   records.
+#
+#     immutability  the digest field on each entry below, tracked in git. It says WHAT BYTES each
+#                   image is, and it makes a re-pushed tag incapable of silently changing what ran.
+#
+#     availability  a `docker save` tarball per entry plus `kind load image-archive`, with each
+#                   tarball's sha256 recorded on its entry. It is the only one of the three that
+#                   survives upstream deletion, and it is the one git cannot hold: these are
+#                   hundreds of megabytes of container image apiece. The repository therefore
+#                   carries a verifiable RECIPE for the mirror -- the commands, in
+#                   scenarios/cve/README.md, and the checksums, here -- rather than the mirror
+#                   itself. scenarios/cve/tarballs/ is gitignored, and .gitignore's own comment
+#                   block carries that argument.
+#
+#   The checksum is what makes the recipe verifiable rather than merely written down. A tarball
+#   restored from a colleague's disk, a backup or a laptop that still had it is the same image as
+#   the one that ran only if its hash matches, and sh scripts/cve_mirror.sh --verify is the check.
+#
+# WHY THE VULNERABLE DIGEST IS EMPTY TODAY, AND WHY THAT IS THE CORRECT STATE
+#   The vulnerable image does not exist anywhere until an operator builds it: it is a custom artefact
+#   -- adservice's own source at the pinned upstream ref, rebuilt with log4j-core forced to 2.14.1 --
+#   not a tag some registry already serves. Resolving its digest therefore needs the same thing every
+#   other digest in this corpus needs before Tier B: a build, a push (or a `kind load` straight from
+#   the local daemon) and a network round trip to learn what the registry says the pushed manifest's
+#   digest is. Tier A of M5 is offline by construction, so none of that is available here.
+#
+#   The alternative is not "leave it out"; the alternative is to write a plausible-looking digest,
+#   and that is worse than an empty field by a wide margin. This file is inside versions_env_sha256
+#   by reference from infra/versions.env, and that digest is carried by every sealed run bundle. An
+#   invented digest would therefore put an unverifiable value inside the provenance record of every
+#   run, where nothing would ever detect it: the runs would complete, the bundles would seal, and
+#   the claim "these bytes ran" would be false in a way no check in this repository could see. An
+#   empty field is visible, and it is refused. infra/versions.env rule 2 already establishes the
+#   principle -- "every key stays present even when its value is empty", because the key set is an
+#   interface contract and empty values are correct before the milestone that fills them -- and this
+#   is the same shape one level down: the entry set is the contract, the digest is what Tier B
+#   fills.
+#
+#   Tier B is where it is filled: it needs a network to push and re-resolve, which is also where the
+#   tarball is produced and `kind load` is exercised. Until then, sh scripts/cve_mirror.sh
+#   --verify reports both entries `unpinned` and exits 1. That is not a defect to be worked around.
+#   It is the same discipline `make parity-check` and scripts/monitor_determinism.sh keep: a gate
+#   that passes over an empty or unpinned corpus is byte-identical, in a log, to a gate that passed
+#   over a complete one, so this one fails closed and says which entries are missing what.
+#
+#   `repository` and `tag` below are correspondingly provisional. `repository` is a placeholder
+#   namespace (`REGISTRY_PLACEHOLDER/...`) the operator MUST replace with a registry they control --
+#   there is no public registry that already serves this image, unlike ADR-079's Solr entries, which
+#   at least named a real (if unpinned) upstream repository. `tag` is a proposed, human-legible name;
+#   neither has been resolved against a registry from this tree, exactly as the corresponding note in
+#   infra/boutique/images.yaml's header requires this file to say about its own unresolved fields.
+#
+# WHY THE PATCHED DIGEST IS *NOT* EMPTY TODAY, AND HOW THAT DIFFERS FROM THE VULNERABLE HALF
+#   `patched_repository` / `patched_digest` below are filled now, and this is not an exception to the
+#   rule two sections up -- it is a different value with a different provenance. They are a CHECKED
+#   MIRROR of infra/boutique/images.yaml's own `pin-adservice` entry: the exact image this cluster's
+#   adservice Deployment already runs, resolved against the real registry at ITS OWN Tier B, tracked
+#   in git, and read here rather than re-resolved. "The patched image is the current pinned adservice
+#   image" is the researcher's own framing of the decision (2026-09-13): eradication does not roll
+#   the Deployment onto a second, separately-maintained "known good" build, it rolls it back onto the
+#   exact artefact every other Boutique run in this project already deploys. Copying that value here
+#   without a check would violate .agents/rules/00-source-of-truth.md's single-homing rule the moment
+#   the fleet's adservice image is re-pinned and this file is not; scenarios/tests/test_primitive_refs.py
+#   now asserts byte equality between the two files' adservice pins on every test run, which is what
+#   makes this a mirror rather than a second, driftable copy of the same fact -- the same shape
+#   infra/probes/constants.py's relationship to evaluation-protocol.md section 4 already establishes
+#   (ADR-016) for a value mirrored for a different structural reason (a Markdown file cannot be
+#   imported at runtime) but the same discipline: one authority, one checked copy, one test that
+#   fails the moment they disagree.
+#
+#   `docker save`/`tarball_sha256` mirroring is deliberately NOT extended to the patched half, on
+#   ADR-079's own precedent: that design's patched Solr entry was likewise never mirrored by
+#   scripts/cve_mirror.sh, because an actively-maintained production image is not the withdrawal risk
+#   a known-vulnerable tag is. The patched adservice image is stronger still on availability than
+#   that precedent assumed: it is not merely "actively maintained upstream", it is the exact image
+#   every bring-up of this cluster already pulls and needs regardless of whether the CVE arm ever
+#   runs, so its availability is already load-bearing for the whole project, not something this file
+#   would be introducing a new dependency on.
+#
+# THE FORMAT IS DELIBERATELY SMALLER THAN YAML
+#   One top-level key, a block sequence of flat mappings, plain or quoted string scalars, and folded
+#   block scalars for `notes`. No flow collections, no anchors or aliases, no tags, no multiple
+#   documents, no tabs. Two readers consume this file and both are deliberately small:
+#   scenarios/schemas/yamlsubset.py offline, and the awk parser in scripts/cve_mirror.sh, which is
+#   column-anchored so a folded `notes` block cannot be mistaken for a field. Write ordinary YAML
+#   inside those lines and a real YAML parser and both of these agree; step outside them and the
+#   result is a clear failure rather than a silent disagreement. `tag` is quoted on every entry for
+#   a concrete reason: an unquoted two-component tag such as 8.11 is a float to a reader that types
+#   its scalars, and yamlsubset.py refuses floats rather than rounding one.
+#
+# RE-PINNING PROCEDURE, because doing this by halves is the failure mode
+#   Re-resolve the digest, rebuild the tarball, and re-record the tarball's sha256 -- all three, in
+#   one change, for the entry being re-pinned. A digest updated without a rebuilt tarball leaves the
+#   mirror holding the previous image while the pin claims the new one, and `--verify` will not
+#   catch it, because a tarball whose recorded checksum matches is a tarball this repository
+#   believes. The exact commands are in scenarios/cve/README.md, which is also where the mirror
+#   procedure lives, so there is one copy of them and not two. Re-pin every entry rather than the
+#   ones that look like they changed: nothing offline can tell a stale digest from a current one. If
+#   the FLEET's adservice pin ever moves (infra/boutique/images.yaml's own re-pin procedure), update
+#   `patched_repository` / `patched_digest` below in the SAME commit -- the new equality test fails
+#   otherwise, which is the point of it.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Editing a digest in place redefines what every already-sealed bundle carrying that scenario_id
+#   ran, while the identifier keeps saying the same thing, and nothing detects it: runs keep
+#   completing. Editing a repository or a tag does the same one level up. Deleting an entry makes
+#   every bundle naming its scenario unreproducible, because the recipe for the image is the only
+#   description of it that exists in this repository. Adding an entry whose scenario_id matches no
+#   scenario manifest is a silent no-op in the same way an unmatched Kustomize image name is:
+#   nothing fails, the image is simply never admitted, and the scenario's declared first signal
+#   quietly never fires. Changing a tarball filename without moving the tarball turns a present
+#   mirror into an absent one.
+#
+#   Changing `tarball_sha256` to match a tarball that is not the pinned image is the failure this
+#   file cannot catch on its own, and it is worth naming: the checksum proves the tarball is what
+#   was recorded, and the digest proves the image is what was pinned. Both, or neither means
+#   anything.
+
+images:
+  - id: CVE-SCN-04-adservice
+    scenario_id: SCN-CVE-04
+    cve_id: CVE-2021-44228
+    component: adservice
+    source: engineering-build
+    reference: https://nvd.nist.gov/vuln/detail/CVE-2021-44228
+    repository: 127.0.0.1:5001/agentic-overwatch/adservice-log4shell
+    tag: "v0.10.6-log4j-2.14.1"
+    digest: "sha256:dfd6eaa4fd063ee968d1156bf6110dccecd64c24e4449beb10c4290df641600d"
+    container: server
+    patched_repository: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/adservice
+    patched_digest: "sha256:f580c4853e896dd2083f0c270c4b7aa5feda6dd56058a93b87d0c88334a4c07d"
+    tarball: cve-scn-04-adservice.tar
+    tarball_sha256: "556ed4e5669229c39a16ab2550124042b349be0adb7f5c2aade3d350848c6698"
+    notes: >-
+      adservice's own source at the pinned upstream ref (v0.10.6), rebuilt with log4j-core forced to
+      2.14.1 -- the version Log4Shell (CVE-2021-44228) is unpatched in -- and otherwise unchanged: the
+      same gRPC service, the same port 9555, the same grpc-native readiness and liveness probes, the
+      same entrypoint. The vulnerability is therefore a property of a dependency this service already
+      carries (log4j-core 2.26.1 at the pinned ref today) rather than of an unrelated image wearing
+      adservice's name, which is what the supervisor's "vulnerable build of the same service" ruling
+      requires and what ADR-079's Solr sidecar could not be. scenarios/cve/adservice/README.md carries
+      the build recipe; the Dockerfile lives beside it. SCN-CVE-04 admits it and stops before
+      exploitation, because that scenario's first signal is the image scanner and a scenario whose
+      exploit fires first would be measuring something else. Repository, tag and digest are all
+      unresolved against a registry from this tree and are filled at Tier B, by the operator who
+      builds and pushes the image -- see ADR-091 for the exact steps. The patched half needs no
+      separate build: it is a checked mirror of infra/boutique/images.yaml's own adservice pin, the
+      exact image this cluster already runs everywhere adservice is not under test.
+  - id: CVE-SCN-05-adservice
+    scenario_id: SCN-CVE-05
+    cve_id: CVE-2021-44228
+    component: adservice
+    source: engineering-build
+    reference: https://nvd.nist.gov/vuln/detail/CVE-2021-44228
+    repository: 127.0.0.1:5001/agentic-overwatch/adservice-log4shell
+    tag: "v0.10.6-log4j-2.14.1"
+    digest: "sha256:dfd6eaa4fd063ee968d1156bf6110dccecd64c24e4449beb10c4290df641600d"
+    container: server
+    patched_repository: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/adservice
+    patched_digest: "sha256:f580c4853e896dd2083f0c270c4b7aa5feda6dd56058a93b87d0c88334a4c07d"
+    tarball: cve-scn-05-adservice.tar
+    tarball_sha256: "556ed4e5669229c39a16ab2550124042b349be0adb7f5c2aade3d350848c6698"
+    notes: >-
+      The identical build CVE-SCN-04-adservice pins -- same repository, same tag, and the same digest
+      once Tier B resolves it (researcher/supervisor decision, 2026-09-13: the two scenarios may share
+      one vulnerable image, differing in scenario stage rather than in target). Two rows exist because
+      every reader of this file resolves a primitive's ref to exactly one entry owned by the naming
+      scenario, not because the bytes differ. Here the exploit reaches the vulnerable library over
+      adservice's own gRPC edge -- the AdService.GetAds call the frontend makes on the home and product
+      pages -- before the scan of the newly-rolled image lands, so the first evidence is a syscall
+      rather than a scan finding: the deliberate contrast with SCN-CVE-04. Unlike ADR-079's CVE-05,
+      whose exploit reached a co-located sidecar with no real traffic path, this one sits on the exact
+      workload and container the real call edge terminates in. Repository, tag and digest are
+      unresolved against a registry from this tree and are filled at Tier B by the same build as
+      CVE-SCN-04-adservice; building and pushing it once produces both entries' pin. The patched half
+      is the same checked mirror of infra/boutique/images.yaml's adservice pin as the sibling entry.

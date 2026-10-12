@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: evidence-aggregator-config
+  namespace: monitor
+data:
+  MONITOR_HTTP_HOST: "0.0.0.0"
+  MONITOR_HTTP_PORT: "8080"
+  MONITOR_DATA_DIR: /var/lib/overwatch/evidence/aggregator
+  MONITOR_QUOTING_ENABLED: "true"

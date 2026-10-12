@@ -1,0 +1,72 @@
+# infra/netpol/probe/client.yaml -- the source half of the NetworkPolicy enforcement proof: a pod
+# that does nothing at all until scripts/netpol_proof.sh execs curl inside it. Applied by that
+# script after the NODE_NAME_PLACEHOLDER token below has been substituted. Part of milestone task
+# M1-T1.1; see infra/netpol/probe/namespace.yaml for the scope boundary and
+# infra/netpol/probe/server.yaml for the reasoning behind the placeholder and the image choice,
+# neither of which is repeated here.
+#
+# WHY A SLEEPING POD AND NOT A JOB THAT CURLS ONCE
+#   The proof needs to issue several requests from the same source, at moments it chooses -- one
+#   before any policy exists, several while a policy is in force and a datapath monitor is
+#   recording, and one after the policy is removed -- and it needs every one of them to come from
+#   the same pod, on the same node, with the same identity. A Job or a one-shot pod would give each
+#   request a different pod, a different address and potentially a different node, and the client's
+#   identity is half of what the drop event in step four attributes. A pod that sits idle and is
+#   driven by exec keeps the source fixed across the whole proof, which is what makes the before
+#   and after comparisons comparisons at all.
+#
+#   agnhost's pause subcommand is the idle loop. It is preferred to a shell sleep because it is a
+#   real process with no shell in front of it, so the container has one predictable PID 1 and
+#   terminates promptly.
+#
+# WHY THE CONTROL-PLANE TOLERATION
+#   The cross-node case has to place the client and the server on different nodes, and this cluster
+#   has exactly two: one control-plane and one worker. The server belongs on the worker, because
+#   that is where ordinary workloads run, so the only node left for the client in the cross-node
+#   case is the control-plane node -- which carries the node-role.kubernetes.io/control-plane
+#   NoSchedule taint that keeps ordinary workloads off it. Without the toleration the client would
+#   sit Pending forever and the cross-node case would fail on scheduling rather than on anything to
+#   do with policy.
+#
+#   The toleration is a permission, not a preference: it lets this pod land on a tainted node, and
+#   the nodeSelector below is what decides whether it actually does. So the same file serves both
+#   cases -- in the same-node case the selector names the worker and the toleration is simply
+#   unused. This is also why the toleration is scoped to that one taint by key and effect rather
+#   than written as a blanket empty-operator toleration: a pod that tolerates everything would also
+#   schedule onto a node that is cordoned, disk-pressured or being drained, and would then report a
+#   scheduling accident as a network result.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Removing the toleration breaks only the cross-node case, and it breaks it as a Pending pod
+#   rather than as a failed assertion, which is the harder failure to read. Replacing pause with a
+#   command that exits turns every exec in the proof into a "container not running" error.
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: netpol-probe-client
+  namespace: netpol-probe
+  labels:
+    # No policy selects this pod. The label exists so that a human reading `kubectl get pods -L`
+    # can tell the two fixtures apart, and so that the namespace's contents are self-describing.
+    app.kubernetes.io/name: netpol-probe-client
+spec:
+  # Substituted by scripts/netpol_proof.sh with a node name discovered from the API server. An
+  # unsubstituted manifest is rejected on apply, which is the intended loud failure.
+  nodeSelector:
+    kubernetes.io/hostname: NODE_NAME_PLACEHOLDER
+  # Scoped to exactly the taint the control-plane node carries; see WHY THE CONTROL-PLANE
+  # TOLERATION above before widening it.
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+  # The proof deletes and recreates this pod between its two cases, because nodeSelector is
+  # immutable. Zero grace makes that turnaround immediate.
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: client
+      image: registry.k8s.io/e2e-test-images/agnhost:2.53
+      # Idles until the proof execs curl. See WHY A SLEEPING POD above.
+      args:
+        - pause

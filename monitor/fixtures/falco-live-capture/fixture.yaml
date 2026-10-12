@@ -1,0 +1,16 @@
+# Fixture manifest -- flat `key: value`, no nesting and no lists. See monitor/fixtures/README.md
+# for the format, the key set, and why the corpus_cap_* values are not evaluation-protocol values.
+fixture_id: falco-live-capture
+source: falco
+provenance: captured
+synthesised_from:
+capture_commit: b716bd6a553ee3b1e8f420fa65c647955f65d466
+source_tool_version: falco 0.43.0 with the modern_ebpf driver 9.1.0+driver, chart falco-8.0.1
+seed:
+golden_arm: G0-FULL
+audit_severity:
+corpus_cap_status: FIXTURE-CORPUS-TEST-PARAMETER
+corpus_cap_excerpt_count_max: 5
+corpus_cap_excerpt_length_max_chars: 200
+corpus_cap_summary_length_max_chars: 300
+description: Six JSON alert lines read byte-for-byte from the stdout of the live Falco DaemonSet in namespace monitor on the kind cluster, two from each of the three rules that fired during the capture window -- Read sensitive file untrusted at priority Error, Terminal shell in container at priority Warning, and Unexpected outbound connection destination at priority Notice. Unlike the synthesised falco fixture beside it these bytes carry the field shapes a real emitter produces rather than the ones the documentation describes -- JSON null rather than the string placeholder for absent k8s fields, an empty string for an unresolved proc.exepath, the sentinel user.uid 4294967295 for an unmapped user, and container.id host for a host-context event. Records are ordered by their emitted time field. The caps are mid-range for the corpus so that real Falco output lengths are observed being capped rather than passing through untouched.

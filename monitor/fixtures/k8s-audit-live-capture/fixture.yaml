@@ -1,0 +1,16 @@
+# Fixture manifest -- flat `key: value`, no nesting and no lists. See monitor/fixtures/README.md
+# for the format, the key set, and why the corpus_cap_* values are not evaluation-protocol values.
+fixture_id: k8s-audit-live-capture
+source: k8s_audit
+provenance: captured
+synthesised_from:
+capture_commit: b716bd6a553ee3b1e8f420fa65c647955f65d466
+source_tool_version: kube-apiserver v1.36.1 emitting audit.k8s.io/v1 under infra/audit/audit-policy.yaml
+seed:
+golden_arm: G0-FULL
+audit_severity: high
+corpus_cap_status: FIXTURE-CORPUS-TEST-PARAMETER
+corpus_cap_excerpt_count_max: 7
+corpus_cap_excerpt_length_max_chars: 180
+corpus_cap_summary_length_max_chars: 260
+description: Six audit records copied byte-for-byte from the live kind control-plane audit log at /var/lib/overwatch/evidence/k8s_audit.jsonl, the same file monitor/audit_forwarder.py tails. Chosen to span what the deployed policy actually produces -- a RequestResponse serviceaccounts create carrying a full requestObject and responseObject, a Metadata pods create, a Metadata pods delete, a subjectaccessreviews create, a patch on events that returned 404, and a leases update that returned 504. They carry real apiserver artefacts the synthesised audit fixture has no way to invent -- the authentication.kubernetes.io/credential-id extra with X509SHA256 and JTI forms, the apiserver.latency.k8s.io annotation family, real user agents, and real cluster source IPs. audit_severity is declared here rather than derived because the deployed forwarder still carries the PENDING-M2-AUDIT-RULE sentinel and the per-rule assignment is authored at T2.4.

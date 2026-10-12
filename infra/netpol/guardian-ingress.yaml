@@ -1,0 +1,78 @@
+# infra/netpol/guardian-ingress.yaml -- who may open a connection to the Guardian's mediation
+# surface. ADR-076; traceability row T-44; docs/protocols/security-policy.md section 6.
+#
+# WHY THIS FILE EXISTS
+#   security-policy.md section 6 states the caller-identity residual: `POST /v1/tokens`
+#   authenticates nobody, so any party with network reach to the issue surface can mint any
+#   within-authority capability naming any issuer. Section 6 described that party as threat-model
+#   position P4, the agent layer. The cluster said otherwise. Before this file, the only
+#   NetworkPolicies in the repository selected the `agents` namespace (agents-default-deny.yaml,
+#   agents-g2-open.yaml) and the throwaway `netpol-probe` namespace. Nothing selected `guardian`,
+#   infra/cilium/values.yaml sets no policyEnforcementMode, and in Cilium's default mode an
+#   endpoint no policy selects accepts traffic from anywhere. On 2026-09-12 a pod in `boutique`
+#   opened a TCP connection to guardian.guardian.svc.cluster.local:8080 (agnhost connect, exit 0).
+#   `boutique` is where four of the five scenarios place the attacker's foothold, so P4 included
+#   the target application, not only the agent layer.
+#
+# WHAT IT DOES, AND WHAT IT DOES NOT
+#   It narrows WHO CAN REACH the issue surface to the agent layer. It does NOT establish WHO ASKED.
+#   Any pod in `agents` can still mint a token naming any registered identity; the residual
+#   section 6 states remains, smaller. Closing it would need per-node standing credentials, which
+#   FR3.1 precludes. This file is not a fix for the residual and must never be described as one.
+#
+# THE ADMITTED PEERS, AND WHY THE LIST IS THIS SHORT
+#   * Pods in `agents`, on TCP 8080. The in-cluster agent layer. agents-default-deny.yaml permits
+#     egress to this namespace on this port and nothing else, so the two files describe the same
+#     single flow from both ends. The namespace is selected rather than a pod label, for the reason
+#     agents-default-deny.yaml gives for its egress rule: the agent namespace's workloads are
+#     ephemeral and carry no label anyone has chosen, and a selector that matches nothing would
+#     deny the one flow that must work.
+#   * Nothing else is listed, and three paths that must keep working need no entry:
+#     - The runner and the host-side agent graph reach the Guardian through
+#       `kubectl port-forward` (scripts/port_forward.sh). The container runtime dials the target
+#       port on the pod's own loopback inside its network namespace, so that traffic never crosses
+#       the endpoint's policy hook.
+#     - The kubelet's readiness and liveness probes arrive from the local node. Cilium admits the
+#       local host to its own endpoints by default precisely so health checks survive an ingress
+#       policy.
+#     - The runner reads the audit chain back with `kubectl exec` (runner/live_evidence.py), which
+#       is an API-server stream, not a network connection to the pod.
+#     infra/tests/probe_guardian_reach.sh checks all of this rather than trusting the paragraph
+#     above: `agents` admitted, `boutique` denied with the drop attributed to Cilium's policy
+#     engine, and the port-forwarded /healthz still answering.
+#
+# EVERY ARM, IDENTICALLY
+#   scripts/guardian_deploy.sh applies this file on every Guardian deploy, and the runner deploys
+#   the Guardian at the start of every attempt in every arm (runner/live_run.py,
+#   _condition_actions). No condition flag reads or edits it. G1-LOGONLY and G2-SHAREDCRED change
+#   what the Guardian does and which credential exists; neither changes who may reach it, so the
+#   reach boundary is not an ablated property and cannot differ between arms.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Widening `from` re-opens the issue surface to the target application and re-opens T-44's
+#   evidence. Narrowing it below `agents` breaks in-cluster mediation. Adding a port admits a
+#   surface the Guardian does not serve. Removing policyTypes turns this into a no-op that still
+#   reads as a boundary.
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: guardian-ingress-agents-only
+  namespace: guardian
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: guardian
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: guardian
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agents
+      ports:
+        - protocol: TCP
+          port: 8080

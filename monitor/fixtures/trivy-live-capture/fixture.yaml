@@ -1,0 +1,16 @@
+# Fixture manifest -- flat `key: value`, no nesting and no lists. See monitor/fixtures/README.md
+# for the format, the key set, and why the corpus_cap_* values are not evaluation-protocol values.
+fixture_id: trivy-live-capture
+source: trivy
+provenance: captured
+synthesised_from:
+capture_commit: b716bd6a553ee3b1e8f420fa65c647955f65d466
+source_tool_version: trivy 0.69.3 emitting report SchemaVersion 2
+seed:
+golden_arm: G0-FULL
+audit_severity:
+corpus_cap_status: FIXTURE-CORPUS-TEST-PARAMETER
+corpus_cap_excerpt_count_max: 11
+corpus_cap_excerpt_length_max_chars: 230
+corpus_cap_summary_length_max_chars: 340
+description: The unmodified JSON report of a real trivy image scan, run in namespace monitor from the same pinned aquasec/trivy 0.69.3 image and against the same digest-pinned Online Boutique frontend image that infra/monitor/trivy-kubernetes-job.yaml scans, with the report taken from the scanner before any upload step. Two Results entries -- a debian os-pkgs target that genuinely carries no Vulnerabilities, and a gobinary lang-pkgs target for src/server carrying twenty real findings against the live vulnerability database. Unlike the synthesised trivy fixture beside it, every CVE identifier, CVSS vector, reference list, severity source and published date here is real, and the report is kept whole rather than trimmed. That matters beyond shape coverage -- this is the only fixture in the corpus whose payload size and description lengths are the ones a real scan produces, which is the quantity the T2.5b cap study has to be calibrated against. The caps are the loosest of the four captured fixtures for that reason.

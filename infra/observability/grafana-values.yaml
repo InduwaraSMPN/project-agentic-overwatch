@@ -1,0 +1,141 @@
+# infra/observability/grafana-values.yaml -- Helm values for the Grafana release, the human-facing
+# read side of the observability stack.
+#
+# WHERE THE KEY NAMES COME FROM
+#   Chart: grafana/grafana, installed by infra/observability/install.sh at the version held by
+#   GRAFANA_VERSION in infra/versions.env. Every key below was read out of the chart's own
+#   values.yaml at chart version 10.5.15 (app version 12.3.1), source
+#   https://github.com/grafana/helm-charts/blob/grafana-10.5.15/charts/grafana/values.yaml
+#   -- names, nesting and upstream defaults are quoted from that file rather than remembered. Helm
+#   ignores a values key the chart does not define, so a mistyped key produces no error and no
+#   effect; checking each key against the file, and recording the version checked against, is what
+#   keeps that failure mode out.
+#
+# FLAGGED, NOT DECIDED: THE grafana/helm-charts REPOSITORY IS MIGRATING
+#   The chart's own README carries a migration notice: the grafana chart is moving to
+#   grafana-community/helm-charts, and after 30 January 2026 updates and support come from that
+#   repository rather than from grafana/helm-charts. The move has visibly happened. grafana
+#   10.5.15 is the last version in the old repository and its Chart.yaml sets `deprecated: true`,
+#   which makes helm print a deprecation warning on every render, while the new repository
+#   already publishes grafana 12.x against a newer Grafana.
+#
+#   install.sh installs from the repository the M1 plan names, and nothing here changes that.
+#   Which repository this project pins is a technology choice; AGENTS.md iron rule 5 says a
+#   technology choice gets an ADR before merge, and .agents/rules/00-source-of-truth.md says a
+#   conflict between a work order and what is actually out there is reported rather than settled
+#   by whoever happened to notice it. So it is written down here and raised, not switched.
+#
+#   One thing is already settled, because it was tested rather than assumed: every key in this
+#   file exists in both charts and renders identically under both. `helm template` against
+#   grafana/grafana 10.5.15 and against grafana-community/grafana 12.11.2, with this file as the
+#   only values input, produced the same container resources, the same emptyDir volumes and the
+#   same provisioned datasource. If the decision is to follow the migration, this file does not
+#   change: GRAFANA_VERSION in infra/versions.env and GRAFANA_REPO_URL in install.sh do.
+#
+# WHAT GRAFANA IS AND IS NOT FOR HERE
+#   It is an operator's window onto the Prometheus in this namespace: something to look at while
+#   bringing the environment up, while watching a run, and while working out why a scrape target
+#   is red. It is NOT part of the measurement path. Nothing in analysis/ or runner/ reads Grafana,
+#   no number in a run bundle comes from it, and .agents/rules/20-parity-and-determinism.md
+#   requires analysis to read raw run bundles only. That is why this file provisions one
+#   datasource and no dashboards: a dashboard that mattered would be a second, unversioned home
+#   for a query whose real home is the collector code.
+#
+# THE ADMIN PASSWORD IS GENERATED, NOT WRITTEN DOWN
+#   adminPassword is deliberately absent. The chart's default adminUser is `admin` (values.yaml
+#   L499) and adminPassword is commented out (L500); with neither adminPassword, nor
+#   admin.existingSecret, nor a GF_SECURITY_ADMIN_PASSWORD environment variable set, the chart's
+#   templates/secret.yaml renders an admin Secret whose password comes from the `grafana.password`
+#   helper -- randAlphaNum 40, base64-encoded (templates/_helpers.tpl, the grafana.password
+#   definition). That helper first does a `lookup` for an existing Secret of the same name and
+#   reuses its password when one is there, so re-running install.sh does not rotate the credential
+#   and the install stays idempotent.
+#
+#   This satisfies AGENTS.md iron rule 4 -- no secrets in the repository -- without inventing a
+#   dev-only default that would then have to be explained every time someone read it. The
+#   credential exists only in the cluster, and install.sh prints the kubectl command that reads it
+#   back. If a later milestone needs a stable password, the correct move is admin.existingSecret
+#   pointing at a Secret created outside git, never adminPassword here.
+#
+# MEMORY INTENT
+#   256Mi limit, 96Mi request. Grafana is a Go process serving a handful of browser sessions, so
+#   its resident set is small and flat; the limit is there so that an idle viewer cannot be the
+#   container that pushes a 10 GB WSL2 utility VM into eviction while a run is being measured. See
+#   the memory-intent paragraph in prometheus-values.yaml for the namespace-wide budget.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   The datasource URL below is coupled to two things that live elsewhere: the Prometheus release
+#   name chosen in install.sh, and the namespace both are installed into. install.sh asserts that
+#   coupling before it installs anything, so a rename made in only one place fails the install
+#   loudly instead of producing a Grafana whose datasource silently never resolves. Turning
+#   persistence on introduces a PersistentVolume that `make nuke` would then have to remove.
+
+# Upstream default is `enabled: false` already (values.yaml L426), restated because it is the
+# decision this file is expected to record rather than an accident of the chart's defaults.
+# Grafana's state here is one provisioned datasource, and provisioning is re-applied from the
+# ConfigMap on every start, so nothing in /var/lib/grafana is worth surviving a pod restart.
+# Persistence would add a PersistentVolume on kind's local-path provisioner that `make down`
+# leaves behind and `make nuke` would have to know about. Note that the chart's initChownData init
+# container is itself gated on persistence.enabled (templates/_pod.tpl), so leaving persistence
+# off also removes an init container and its image pull -- no separate key needed for that.
+persistence:
+  enabled: false
+
+# Upstream default is `enabled: true` (values.yaml L117). The test framework renders a bats-based
+# test Pod and its ConfigMap behind a helm.sh/hook: test annotation, so it does not run during
+# install -- but the ConfigMap is created, and `helm test` would pull a second image onto a node
+# where images are the scarce resource. The install's success criteria are stated in install.sh:
+# three releases converged under --wait, three Services present, and a datasource whose target
+# Service exists. A chart smoke test would not add to that.
+testFramework:
+  enabled: false
+
+# Upstream default is `resources: {}` (values.yaml L362): no requests, no limits. As in
+# prometheus-values.yaml, memory is bounded and CPU is only requested, never limited -- a
+# CFS-throttled container fails slowly and confusingly rather than loudly.
+resources:
+  requests:
+    cpu: 25m
+    memory: 96Mi
+  limits:
+    memory: 256Mi
+
+# Upstream default is `datasources: {}` (values.yaml L672). The chart renders each key of this map
+# as a file under Grafana's provisioning directory, so `datasources.yaml` here becomes
+# /etc/grafana/provisioning/datasources/datasources.yaml, in the format Grafana's own datasource
+# provisioning defines. Provisioning it from values rather than clicking it into the UI is the
+# whole point: a datasource created by hand exists in one person's cluster and in no file, which
+# would make "Grafana reaches its datasource" an unrepeatable claim.
+#
+# THE URL, AND HOW THE SERVICE NAME WAS RESOLVED RATHER THAN GUESSED
+#   The prometheus chart names its server Service from the `prometheus.server.fullname` template
+#   (templates/_helpers.tpl), which is Release.Name + "-" + server.name when the release name
+#   already contains the chart name, and Release.Name + "-" + chart name + "-" + server.name when
+#   it does not. install.sh installs that chart under the release name `prometheus`, and
+#   server.name defaults to `server`, so the Service is `prometheus-server` on port 80
+#   (server.service.servicePort, prometheus 29.27.0 values.yaml L770). That name was confirmed by
+#   rendering the chart with these values, not by reading the template alone, and install.sh
+#   re-checks it against this file before installing anything and against the live cluster after.
+#
+#   The fully qualified DNS name is used rather than the bare Service name so the value does not
+#   depend on Grafana's own namespace resolving to the same place; it is correct from anywhere in
+#   the cluster, and it names the coupling to the `observability` namespace out loud.
+#
+#   timeInterval tells Grafana the scrape interval of this datasource, so that the rate windows it
+#   computes automatically are never shorter than the spacing of the data underneath them. It
+#   matches server.global.scrape_interval in prometheus-values.yaml; if that moves, this moves.
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus-server.observability.svc.cluster.local:80
+        isDefault: true
+        # Not editable from the UI: a datasource edited in the browser diverges from this file
+        # without leaving a trace, and the next reinstall silently reverts it.
+        editable: false
+        jsonData:
+          timeInterval: 15s

@@ -1,0 +1,27 @@
+# Templated from infra/netpol/guardian-ingress.yaml (ADR-076, traceability row T-44). Narrows
+# who may open a connection to the Guardian's mediation surface to pods in the agents
+# namespace, on the Guardian's port. Read the source file for why the allow-list is exactly
+# this short (kubectl port-forward and kubelet probes never cross this policy hook; kubectl
+# exec is an API-server stream, not a connection to the pod).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: guardian-ingress-agents-only
+  namespace: {{ .Values.namespaces.guardian }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: guardian
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: guardian
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.agents }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.guardian.service.port }}

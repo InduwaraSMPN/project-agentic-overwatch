@@ -1,0 +1,72 @@
+# infra/netpol/probe/deny-ingress.yaml -- the policy under test. A default-deny ingress
+# NetworkPolicy that selects the probe server and nothing else, applied and then removed again by
+# scripts/netpol_proof.sh. Part of milestone task M1-T1.1; see infra/netpol/probe/namespace.yaml
+# for the scope boundary this file sits inside.
+#
+# WHAT THIS OBJECT ACTUALLY ASSERTS, AND WHAT IT DOES NOT
+#   Applying a NetworkPolicy proves nothing on its own, and this is the central point of the whole
+#   T1.1 exercise. The Kubernetes API server accepts a NetworkPolicy object whether or not any CNI
+#   is watching for one: the object is stored, `kubectl get netpol` lists it, and if the cluster's
+#   CNI does not implement policy -- kindnet, for instance, does not -- then absolutely nothing
+#   changes in the datapath. "NetworkPolicy applied successfully" is therefore not evidence of
+#   enforcement, and a check that stopped there would report a green result on a cluster with no
+#   enforcement at all. This file is only the stimulus; the evidence is what
+#   scripts/netpol_proof.sh observes afterwards, and specifically the drop event it reads out of
+#   the Cilium agent on the server's node, which is the only artefact that names the policy engine
+#   as the cause.
+#
+# HOW AN EMPTY INGRESS LIST MEANS DENY-ALL
+#   The semantics are easy to get subtly wrong, so they are written out. `policyTypes: [Ingress]`
+#   declares that this policy has an opinion about ingress. The `ingress:` key is then present with
+#   an empty list, which enumerates zero permitted sources. Because a pod selected by any ingress
+#   policy is thereafter reachable only from sources some ingress policy allows, and no policy in
+#   this namespace allows any, the effect on the selected pod is deny-all-ingress. Deleting the
+#   `ingress:` key entirely means the same thing, but stating it as an explicit empty list is the
+#   form that reads as a decision rather than an omission -- a reader can see that zero rules is
+#   what was intended and not a rule that went missing in an edit.
+#
+#   Egress is deliberately not mentioned. `policyTypes` names Ingress alone, so this policy has no
+#   opinion about outbound traffic and the client's DNS lookups and its packets leaving its own
+#   pod are untouched. That separation is what lets the proof distinguish curl exit 28, a packet
+#   dropped at the destination, from curl exit 6, a name that would not resolve: a policy that also
+#   denied egress would make both failures possible at once and the exit code would stop
+#   discriminating between them.
+#
+# WHY THE SELECTOR NAMES ONE POD AND NOT THE WHOLE NAMESPACE
+#   An empty podSelector would select every pod in the namespace, including the client, which would
+#   still produce a denied connection and would still look like a pass. It is rejected because it
+#   makes the experiment less specific for no gain: with one pod selected, the client is provably
+#   unpoliced, so any failure observed is a failure to reach the server rather than a failure to
+#   leave the client, and the drop event can be matched against the server's address to confirm
+#   that the flow which was dropped is the flow that was tested. A blunt namespace-wide policy
+#   would blur exactly the attribution the proof is built to establish. It would also block the
+#   kubelet's readiness probing of the client for no reason.
+#
+# API VERSION
+#   networking.k8s.io/v1 is the stable, in-tree NetworkPolicy API, and it is used rather than a
+#   CiliumNetworkPolicy on purpose. The claim under test is that the *portable* Kubernetes object
+#   is enforced by whatever CNI is installed; proving that Cilium honours its own CRD would prove
+#   something narrower and less useful, and would not be evidence about the resource M3-T3.5 will
+#   write for the agent namespace.
+#
+# LIFECYCLE
+#   scripts/netpol_proof.sh applies this file, asserts the denial and its attribution, then deletes
+#   it and asserts that the same request succeeds again. That reversal is not decoration: without
+#   it, a server pod that had simply died between the positive control and the denial would produce
+#   the same failed connection, and the proof could not tell the two apart.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: netpol-probe-deny-ingress
+  namespace: netpol-probe
+spec:
+  # Selects the probe server alone, by the label server.yaml sets. See WHY THE SELECTOR NAMES ONE
+  # POD above.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: netpol-probe-server
+  policyTypes:
+    - Ingress
+  # Zero permitted sources, stated explicitly. See HOW AN EMPTY INGRESS LIST MEANS DENY-ALL above.
+  ingress: []

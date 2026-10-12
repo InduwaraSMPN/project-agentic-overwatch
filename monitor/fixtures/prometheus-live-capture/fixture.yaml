@@ -1,0 +1,16 @@
+# Fixture manifest -- flat `key: value`, no nesting and no lists. See monitor/fixtures/README.md
+# for the format, the key set, and why the corpus_cap_* values are not evaluation-protocol values.
+fixture_id: prometheus-live-capture
+source: prometheus
+provenance: captured
+synthesised_from:
+capture_commit: b716bd6a553ee3b1e8f420fa65c647955f65d466
+source_tool_version: alertmanager 0.32.0 posting webhook payload version 4
+seed:
+golden_arm: G0-FULL
+audit_severity:
+corpus_cap_status: FIXTURE-CORPUS-TEST-PARAMETER
+corpus_cap_excerpt_count_max: 9
+corpus_cap_excerpt_length_max_chars: 140
+corpus_cap_summary_length_max_chars: 210
+description: One grouped webhook body captured byte-for-byte off the wire from the live Alertmanager in namespace observability, carrying two firing KubeDeploymentReplicasMismatch alerts at severity critical for the boutique namespace. The alerts are real -- Prometheus evaluated the rule in infra/observability/prometheus-values.yaml against kube-state-metrics series for two deployments whose available replica count had genuinely fallen below their specified count. The body therefore carries the label and annotation set Alertmanager actually assembles, including the kube-state-metrics label surface (container, endpoint, instance, job, pod, service, uid) that the synthesised webhook fixture does not model, real fingerprints, a real groupKey and a real generatorURL. The caps are the tightest of the four captured fixtures so that a real alert body is observed being capped.

@@ -1,0 +1,179 @@
+# scenarios/cve/trivy-scan-job.template.yaml -- per-run Trivy scan Job template for the CVE arm's
+# scan-first detection surface. scenarios/attackers/apply.py's `cve` mechanism renders it and
+# creates it once per run, immediately after the vulnerable image is rolled out (ADR-091 Decision 5,
+# wired by ADR-118). See "WHY THE STATIC BRING-UP JOB CANNOT SUBSTITUTE" below for why
+# infra/monitor/trivy-kubernetes-job.yaml cannot do this job.
+#
+# WHY THE STATIC BRING-UP JOB CANNOT SUBSTITUTE
+#   That file is applied ONCE, at bring-up, by infra/monitor/install.sh, scanning a single
+#   hard-coded TARGET_IMAGE (the frontend image, per ADR-046: "Trivy is an ephemeral Kubernetes Job,
+#   not a standing service... the Job scans an explicitly supplied image"). Its report, even when it
+#   is delivered, is timestamped at bring-up. runner/live_evidence.py's begin_monitor_window archives
+#   the whole event tree before every run, and collation drops every event timestamped before the
+#   run's window opens, so a bring-up scan can never reach a run bundle. A scenario whose first
+#   evidence IS the scan of an image admitted mid-run needs a scan that runs mid-run, against that
+#   image. This template is that scan.
+#
+# WHAT THIS TEMPLATE IS
+#   The same shape ADR-046 fixed for the standing Job -- one Trivy init container writing a JSON
+#   report to a shared emptyDir, one uploader container posting it to the SAME aggregator route
+#   (`/v1/trivy`) through the SAME normaliser (monitor/aggregator/sources/trivy.py) -- parameterised
+#   by five tokens. The applier parses this file with scenarios/schemas/yamlsubset.py and replaces
+#   the tokens in the parsed string values, never in the raw text, so a substituted value cannot
+#   change the document's structure:
+#
+#     RUN_NAME_TOKEN  the run id, lowercased: run ids are [A-Z0-9-] only, so the result is a
+#                     DNS-1123 label. It names the Job, `trivy-image-scan-<run id, lowercased>`, so
+#                     two runs never collide on Job identity. The applier refuses a name longer
+#                     than 63 characters, because the Job controller copies the name into a pod
+#                     label value.
+#     RUN_ID_TOKEN    the canonical run id, stamped as the run-id label, on the convention ADR-081
+#                     established for every object this framework creates mid-run.
+#     SCENARIO_ID_TOKEN  stamped as the scenario-id label, the same key
+#                     scenarios/attackers/apply.py's `_labels()` stamps on every object an incident
+#                     primitive creates.
+#     TARGET_IMAGE_TOKEN  the exact `repository@digest` the `cve` mechanism just rolled out -- the
+#                     string `_set_image` patched into the Deployment, never a second,
+#                     independently-typed reference. Two admission and scan steps disagreeing about
+#                     which image was scanned would score a detection label against evidence about
+#                     different bytes than the ones running.
+#     TRIVY_IMAGE_VERSION_TOKEN  infra/versions.env's TRIVY_VERSION, read by the applier exactly as
+#                     infra/monitor/install.sh reads it for the bring-up Job -- one pin, two
+#                     consumers, never a second copy of the version string.
+#
+#   The applier refuses to render if any token is left unreplaced or any token above is absent from
+#   this file, so the template and its renderer cannot drift apart silently.
+#
+# WHY THE SCAN READS THE NODE'S containerd STORE, NOT THE REGISTRY (ADR-118)
+#   The vulnerable image is pinned at a registry on the operator's host loopback
+#   (scenarios/cve/images.yaml, `127.0.0.1:5001/...`). Inside a pod, 127.0.0.1 is the pod's own
+#   loopback, so a registry pull from this Job cannot reach it. The image is instead preloaded into
+#   every kind node's containerd store, and scripts/cve_admission_preflight.sh (run by the applier's
+#   prepare step before t0) checks that on every node by the same `repository@digest`. The adservice
+#   Deployment runs it from that store (`imagePullPolicy: Never`), so the store holds exactly the
+#   bytes that run. `--image-src containerd` with `CONTAINERD_NAMESPACE=k8s.io` makes Trivy read
+#   the image from there, matching it by name and manifest digest. It never falls back to a
+#   registry: an image absent from the store is a failed scan, not a scan of other bytes.
+#
+#   The cost is the node's containerd socket, mounted into the Trivy container. That socket gives
+#   full control of the node's containers, and a read-only mount would not reduce it (connecting to
+#   a socket is not a filesystem write). The Monitor's own Falco DaemonSet already holds the same
+#   socket in the same namespace (infra/monitor/falco-values.yaml, ADR-057, ADR-072). The Job stays
+#   in `monitor`, which is the instrument namespace Falco's rules exclude
+#   (monitor/rules/overwatch-rules.yaml, `overwatch_instrument_namespaces`), and the audit policy
+#   records no Job or Pod creation (infra/audit/audit-policy.yaml), so the scan adds no Falco or
+#   Kubernetes-audit evidence of its own to the run. Its only evidence is its report.
+#
+#   `backoffLimit: 0`, `restartPolicy: Never` and `automountServiceAccountToken: false` are carried
+#   unchanged from infra/monitor/trivy-kubernetes-job.yaml: a scan that fails is a scan that failed,
+#   not one to retry silently into a different report, and this Job needs no Kubernetes credential of
+#   its own. The uploader's `securityContext` is likewise unchanged: no privilege escalation, every
+#   capability dropped, a read-only root filesystem. The uploader never sees the socket.
+#
+# WHY THIS FILE IS NOT A SCENARIO PRIMITIVE
+#   scenarios/schemas/scenario_manifest.v1.json's `incident_primitives[].mechanism` enum is closed:
+#   `{chaosmesh, cve, attacker, workload}`. Admitting an image and having it scanned are one incident
+#   from the scenario's point of view -- SCN-CVE-04's manifest has always described the scan as the
+#   admission primitive's own consequence -- so the scan is a side effect of the `cve` mechanism, as
+#   the `kubectl rollout status` it already runs is, and adds no event to the plan. The plan, and
+#   with it every `(scenario_id, injection_condition, seed)` determinism check, is unchanged.
+#
+# WHEN THE REPORT MUST HAVE ARRIVED
+#   The applier creates the Job and returns without waiting, so the rest of the incident fires at its
+#   planned offsets. After the last event and before the response phase -- which is where the runner
+#   closes the Monitor evidence window and collates it -- apply_plan calls the adapter's `settle`,
+#   which waits TWICE: for this Job's own condition to become Complete, and then for the uploader
+#   container's terminated exit code to be 0. The second wait is the upload acknowledgement and is
+#   read rather than inferred: the uploader exits non-zero on any non-2xx response, so its exit code
+#   is the fact itself, while the Job's Complete condition only says the pod finished (M10 WS-2;
+#   every one of the 300 v1 CVE bundles sealed with no trivy event at all, which is what an inferred
+#   acknowledgement lets through). A Failed Job, a Job whose uploader did not exit 0, or one still
+#   running at the bound fails the run rather than letting it seal without its scan evidence.
+#
+# TEARDOWN
+#   Deleted by the run's teardown, by the scenario-id and run-id labels, from the `monitor`
+#   namespace. A Job left by an earlier attempt of the same run id is deleted before this one is
+#   created, so a retry always scans afresh rather than reading an old Job's Complete status.
+#
+# THE FORMAT IS DELIBERATELY SMALLER THAN YAML
+#   Block style only, no flow collections, no anchors or aliases, no tags, no multi-document file, no
+#   tabs -- the subset scenarios/schemas/yamlsubset.py accepts, because that is the reader the
+#   applier renders it with.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: trivy-image-scan-RUN_NAME_TOKEN
+  namespace: monitor
+  labels:
+    "app.kubernetes.io/name": trivy-image-scan
+    "app.kubernetes.io/part-of": agentic-overwatch
+    "agentic-overwatch.io/scenario-id": SCENARIO_ID_TOKEN
+    "agentic-overwatch.io/run-id": RUN_ID_TOKEN
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        "app.kubernetes.io/name": trivy-image-scan
+        "agentic-overwatch.io/scenario-id": SCENARIO_ID_TOKEN
+        "agentic-overwatch.io/run-id": RUN_ID_TOKEN
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      initContainers:
+        - name: trivy
+          image: docker.io/aquasec/trivy:TRIVY_IMAGE_VERSION_TOKEN
+          imagePullPolicy: IfNotPresent
+          env:
+            # The scan subject is the exact image the cve mechanism just rolled out, never a broad
+            # cluster scan. See this file's header.
+            - name: TARGET_IMAGE
+              value: TARGET_IMAGE_TOKEN
+            # kind's CRI keeps pod images in containerd's k8s.io namespace.
+            - name: CONTAINERD_NAMESPACE
+              value: k8s.io
+          args:
+            - image
+            - --image-src
+            - containerd
+            - --format
+            - json
+            - --output
+            - /work/trivy.json
+            - $(TARGET_IMAGE)
+          volumeMounts:
+            - name: report
+              mountPath: /work
+            - name: containerd-socket
+              mountPath: /run/containerd/containerd.sock
+      containers:
+        - name: uploader
+          image: agentic-overwatch/evidence-aggregator:local
+          imagePullPolicy: Never
+          command:
+            - python
+            - -m
+            - monitor.trivy_uploader
+          env:
+            - name: MONITOR_TRIVY_REPORT
+              value: /work/trivy.json
+            - name: MONITOR_TRIVY_URL
+              value: http://evidence-aggregator.monitor.svc.cluster.local:8080/v1/trivy
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: report
+              mountPath: /work
+              readOnly: true
+      volumes:
+        - name: report
+          emptyDir: {}
+        - name: containerd-socket
+          hostPath:
+            path: /run/containerd/containerd.sock
+            type: Socket

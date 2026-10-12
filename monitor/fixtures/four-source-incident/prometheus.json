@@ -1,0 +1,32 @@
+{
+  "version": "4",
+  "groupKey": "{}/{namespace=\"boutique\"}:{alertname=\"CartServiceErrorRateHigh\"}",
+  "truncatedAlerts": 0,
+  "status": "firing",
+  "receiver": "agentic-overwatch-aggregator",
+  "groupLabels": {"alertname": "CartServiceErrorRateHigh"},
+  "commonLabels": {"namespace": "boutique", "severity": "critical"},
+  "commonAnnotations": {},
+  "externalURL": "https://alertmanager.invalid",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "CartServiceErrorRateHigh",
+        "severity": "critical",
+        "namespace": "boutique",
+        "service": "cartservice",
+        "job": "boutique/cartservice"
+      },
+      "annotations": {
+        "summary": "cartservice is returning errors for more than 5% of requests.",
+        "description": "The 5xx rate over the last 5 minutes is 11.4%, against an SLO of 1%.",
+        "runbook_url": "https://runbooks.invalid/CartServiceErrorRateHigh"
+      },
+      "startsAt": "2026-08-26T10:40:00.500Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "https://prometheus.invalid/graph?g0.expr=boutique_request_errors",
+      "fingerprint": "9ab8c7d6e5f40312"
+    }
+  ]
+}

@@ -1,0 +1,378 @@
+# infra/locust/deployment.yaml -- Locust in the cluster, idle, waiting to be told what load to
+# produce. This is the file scripts/up.sh applies as the load-generator layer of `make up`.
+#
+# IDLE IS THE WHOLE POINT
+#   Locust starts with its web interface up and zero simulated users, and stays that way until a
+#   run swarms it. Nothing here carries a user count, a spawn rate or a target host, because those
+#   belong to a load profile and a load profile belongs to a run.
+#
+#   The alternative -- start Locust already generating load with `make up` -- looks simpler and is
+#   the reason the upstream bundled load generator had to be removed (infra/boutique/
+#   remove-loadgenerator.yaml). Load that begins when the cluster does means every run measures a
+#   system that has been under load for however long it took the operator to get to the run, and
+#   that interval is different every time. It would land in the RQ4 interference figures as
+#   variance that correlates with nothing and cannot be reasoned about after the fact.
+#
+#   So: deployed once, warmed up once, driven per run. The container is already running and its
+#   Python is already imported when a run starts, so what a run pays for is the ramp its profile
+#   asks for and nothing else.
+#
+# HOW A RUN DRIVES IT
+#   Through Locust's own web API on port 8089, which is what the Service below exposes:
+#     GET  /stats/reset      clears the counters, so one run's numbers never leak into the next
+#     POST /swarm            with user_count, spawn_rate and host, taken from the resolved profile
+#     GET  /stop             ends the swarm and leaves the process running for the next run
+#     GET  /stats/requests/csv  produces the bytes that become the bundle's locust_stats.csv
+#   The runner reaches the Service by port-forward, because it runs on the host rather than in the
+#   cluster. Nothing in this manifest names the profile values, so infra/locust/profiles.yaml stays
+#   their only home and `load_profile_id` in a run manifest keeps meaning exactly one thing.
+#
+#   `--csv` is deliberately not passed. It writes continuously to disk, which would need a writable
+#   volume, would span run boundaries, and would give the bundle a second, differently-scoped copy
+#   of the statistics the API already serves per run.
+#
+# STANDALONE, NOT MASTER AND WORKERS
+#   One process, one pod. Distributed Locust exists for load that one CPU cannot generate, and the
+#   campaign profile is ten simulated users with a one-second think time -- roughly ten requests a
+#   second, which is orders of magnitude below what a single Locust process handles. Against that,
+#   distributed mode costs three things this experiment cannot afford to pay: worker registration is
+#   a race at startup, so the number of workers actually attached when a run begins varies between
+#   runs; the load generator's own resource footprint becomes a function of scheduling rather than a
+#   constant, which matters because the resource collector counts Locust as platform overhead; and
+#   two more moving parts join the set of things that can fail in the middle of a campaign. Should a
+#   later profile genuinely need more load than one process can produce, that is a new decision with
+#   its own ADR, not a quiet edit here.
+#
+# THE LOCUSTFILE IS EMBEDDED, AND A TEST HOLDS THE COPY HONEST
+#   The ConfigMap below carries infra/locust/locustfile.py verbatim, indented into a block scalar.
+#   That is a second copy of a source file, which this repository normally refuses, so the reason
+#   and the guard both need stating.
+#
+#   The reason: scripts/up.sh applies this manifest with `kubectl apply -f`, one file, no build
+#   step. A Kustomize configMapGenerator would need a kustomization.yaml in this directory and would
+#   turn a one-file apply into a two-tool one; generating the ConfigMap at bring-up time with
+#   `kubectl create configmap --from-file` would move the load script out of the manifest and into a
+#   shell script's arguments, where nothing reviews it. Embedding keeps the deployed artefact
+#   complete and inspectable: what `kubectl apply -f` sends is exactly what runs.
+#
+#   The guard: infra/tests/test_load_profiles.py compares the embedded block against
+#   infra/locust/locustfile.py byte for byte and fails if they differ. **Edit locustfile.py and
+#   re-embed it here in the same commit.** The two are one artefact in two places, and the test is
+#   what stops that from becoming two artefacts.
+#
+#   To re-embed after editing the script, indent every non-empty line by four spaces and leave blank
+#   lines blank, replacing the block below. The script wraps at 96 columns precisely so that the
+#   indented copy still fits the repository's 100-column line width.
+#
+# THE IMAGE DIGEST IS A MIRROR OF infra/versions.env, ON THE SAME TERMS AS THE BOUTIQUE REF
+#   A Kubernetes manifest cannot read an environment variable, so the image below carries its digest
+#   as a literal even though infra/versions.env's LOCUST_IMAGE_DIGEST is the pin of record -- it is
+#   one of the values the versions_env_sha256 digest in every run manifest closes over. **Change
+#   both in the same commit.** infra/tests/test_load_profiles.py asserts they agree, and skips
+#   itself while the key is still empty.
+#
+#   Version chosen: locustio/locust 2.46.3, the newest release with several weeks of use behind it
+#   at the time of writing rather than the newest release outright. A load generator that
+#   misbehaves does not fail a campaign loudly; it produces figures that are quietly wrong, so a
+#   little soak time is worth more here than a few weeks of freshness. The tag is written alongside
+#   the digest because a bare digest tells a reader nothing about what version they are looking at;
+#   the digest is what resolves, the tag is documentation.
+#
+#   Flagged rather than silently reconciled, per .agents/rules/00-source-of-truth.md: the group
+#   comment above this key in infra/versions.env reads "Online Boutique plus its bundled Locust load
+#   generator", and this key no longer pins that bundled generator -- it pins the standalone
+#   locustio/locust image this manifest runs, because the bundled one is deleted by the Boutique
+#   overlay. The key's use and its group comment should be reconciled by whoever populates the
+#   application group.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Adding `--autostart`, a `--users` argument or a baked `--host` puts load-profile values in a
+#   second place and makes `load_profile_id` describe only part of what the cluster saw. Moving
+#   Locust into the boutique namespace makes it indistinguishable from an application service to
+#   both the component floor in infra/status/components.yaml and the resource collector's series
+#   attribution. Adding replicas turns one load generator into several, each running the full
+#   profile.
+
+# A namespace of its own, not the application's. Two things depend on that separation:
+# infra/status/components.yaml counts every Deployment in the boutique namespace against a floor of
+# eleven, so a load generator sharing that namespace could satisfy the floor while a real service
+# was missing; and the resource collector labels each series app, framework or platform from the
+# namespace it came from, so a load generator alongside the application would have to be classified
+# by name instead. scripts/up.sh creates this namespace before applying the file, so the object
+# below is usually a no-op -- it is here so that applying this manifest on its own also works.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: locust
+  labels:
+    app.kubernetes.io/name: locust
+    app.kubernetes.io/component: load-generator
+---
+# Verbatim copy of infra/locust/locustfile.py. See THE LOCUSTFILE IS EMBEDDED in the header: a test
+# compares this block against that file byte for byte, so the two cannot drift apart unnoticed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: locust-locustfile
+  namespace: locust
+  labels:
+    app.kubernetes.io/name: locust
+data:
+  locustfile.py: |
+    """The load script every profile in infra/locust/profiles.yaml names.
+
+    A NOTE ON THE WRAP WIDTH
+        This file wraps at 96 columns rather than the repository's usual 100. A verbatim copy of
+        it is embedded, indented by four spaces, in the ConfigMap inside
+        infra/locust/deployment.yaml -- that is how the script reaches the cluster, and a test
+        holds the two byte for byte identical. Four columns of headroom here is what keeps the
+        embedded copy inside the same 100-column wrap as everything else in the repository.
+
+    WHAT THIS DRIVES
+        Online Boutique's frontend, over the same four paths a browsing customer walks: the home
+        page, a product page, adding that product to the cart, and viewing the cart. Those are
+        the paths that fan out to the most backend services -- the home page alone calls
+        productcatalogservice, currencyservice and adservice, and the cart pages add cartservice
+        and its Redis store -- so a load profile built from them exercises the service graph
+        rather than one edge of it. A synthetic endpoint that touched only the frontend would
+        report interference figures no incident scenario could ever reproduce.
+
+    WHY THERE IS NO CHECKOUT TASK
+        Checkout is the one Boutique path that mutates state which outlives the request. Each
+        order placed is an order emailed, a shipping quote tracked and a cart emptied, and those
+        side effects accumulate across every run in a campaign, so the hundredth run drives an
+        application in a different state from the first. That is precisely the run-to-run
+        variance this component exists to remove, and it would land inside the RQ4 interference
+        delta as noise varying with campaign position rather than with the framework. The
+        checkout form also takes a payment-card field, and a load script that fills one -- with
+        any value, synthetic or not -- is a load script nobody can read at a glance and be sure
+        about. Adding to cart is already a write path, so the profile is not read-only; it is
+        bounded, which is the property that matters.
+
+    DETERMINISM
+        .agents/rules/20-parity-and-determinism.md forbids unseeded randomness on any path a run
+        depends on, and this file is on one. Two consequences are visible below.
+
+        The think time is constant, not drawn from a range. Locust's `between` samples an
+        unseeded uniform distribution, so two runs of the same profile would issue different
+        numbers of requests over the same window and the interference delta would carry that
+        difference as though it were an effect.
+
+        The product a task visits comes from a fixed cycle over the catalogue, not from a random
+        choice. Each simulated user walks the same nine products in the same order, so the mix of
+        backend calls a run produces is a function of how many tasks ran and nothing else. The
+        cycle is per user instance rather than module level, because a shared iterator would make
+        the sequence depend on the interleaving of concurrent greenlets, which is exactly the
+        wall-clock dependence the rule rules out.
+
+        What remains random is Locust's own weighted choice of which task to run next, which the
+        M1 plan admits explicitly: the alternative is a fixed task order, and a fixed order is not
+        a load profile but a script, with the queueing behaviour of a batch job rather than of
+        traffic.
+
+    HOST
+        Deliberately not set here. A `host` attribute on the user class would be a second home for
+        the value infra/locust/profiles.yaml already carries per profile, and the two would drift
+        the first time the application moved namespace. The host arrives at swarm time, from the
+        profile the run names -- see infra/locust/deployment.yaml for the mechanism.
+
+    WHAT BREAKS IF THIS FILE CHANGES
+        The task weights and the think time together define what `users` means in a profile:
+        ten users at one think time is not the same load as ten users at another. Changing either
+        silently redefines every profile in the registry, and so breaks comparability with every
+        run already recorded -- without changing `load_profile_id`, which is the field a bundle
+        carries to say what load it saw. A change here is a new profile, not an edit to this one.
+    """
+
+    import itertools
+
+    from locust import HttpUser, constant, task
+
+    # The nine product identifiers Online Boutique's catalogue ships at the pinned release. They
+    # are stable data rather than configuration: they come from productcatalogservice's own
+    # products.json and change only when the application changes, which is a version bump and a
+    # re-pin. Listed here rather than discovered at runtime, because discovering them would make
+    # the load script's behaviour depend on a response it also measures.
+    PRODUCT_IDS = (
+        "OLJCESPC7Z",
+        "66VCHSJNUP",
+        "1YMWWN1N4O",
+        "L9ECAV7KIM",
+        "2ZYFJ3GM2N",
+        "0PUK6V6EV0",
+        "LS4PSXUNUM",
+        "9SIQT8TOJO",
+        "6E92ZMYYFZ",
+    )
+
+
+    class BoutiqueUser(HttpUser):
+        """One simulated shopper browsing Online Boutique's frontend."""
+
+        # A fixed one-second pause between tasks. See DETERMINISM in the module docstring: this
+        # is the value that turns `users` in a profile into a defined request rate instead of an
+        # approximate one, so it is as load-bearing as the user count itself.
+        wait_time = constant(1)
+
+        def on_start(self) -> None:
+            """Give this user its own position in the catalogue cycle."""
+            self._products = itertools.cycle(PRODUCT_IDS)
+
+        def _next_product(self) -> str:
+            return next(self._products)
+
+        @task(4)
+        def view_home(self) -> None:
+            """The landing page: productcatalogservice, currencyservice, adservice."""
+            self.client.get("/", name="/")
+
+        @task(4)
+        def view_product(self) -> None:
+            """A product detail page, which also pulls recommendations and an ad.
+
+            Reported under a single stats name rather than one per identifier. Nine separate
+            rows would split the sample nine ways and make the p95 of each far noisier than the
+            p95 of the page, which is the figure evaluation-protocol section 3's interference
+            measure actually reads.
+            """
+            self.client.get(f"/product/{self._next_product()}", name="/product/[id]")
+
+        @task(2)
+        def add_to_cart(self) -> None:
+            """Add one unit of the next product to this user's cart.
+
+            The frontend answers with a redirect to the cart page and the client follows it, so
+            the latency recorded for this row is the user-visible cost of the whole
+            add-then-see-cart round trip. That is deliberate and it is consistent across every
+            run, so it cancels in the framework-on minus baseline delta rather than biasing it.
+            """
+            self.client.post(
+                "/cart",
+                data={"product_id": self._next_product(), "quantity": 1},
+                name="/cart [add]",
+            )
+
+        @task(1)
+        def view_cart(self) -> None:
+            """The cart page: cartservice, its Redis store, and a shipping quote."""
+            self.client.get("/cart", name="/cart")
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: locust
+  namespace: locust
+  labels:
+    app: locust
+    app.kubernetes.io/name: locust
+spec:
+  # One, and this is a decision rather than a default. Each replica would run the whole profile, so
+  # two replicas swarmed with ten users each drive twenty. See STANDALONE in the header.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: locust
+  template:
+    metadata:
+      labels:
+        app: locust
+        app.kubernetes.io/name: locust
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: locust
+          # Digest is the pin; the tag is documentation. Keep in step with LOCUST_IMAGE_DIGEST in
+          # infra/versions.env -- see the header, and the test that asserts the two agree. The line
+          # runs past the repository's 100-column wrap because a digest reference is one unbreakable
+          # token; infra/versions.env's KIND_NODE_IMAGE runs past it for the same reason.
+          image: locustio/locust:2.46.3@sha256:0d7e43081c5f9437aed6513dc5827ec6984f024d00141a201a5b6be6e9a63e5d
+          # The image's entrypoint is locust itself, so these are its flags. No --autostart, no
+          # --users, no --spawn-rate and no --host: every one of those belongs to a run, and a run
+          # supplies them through the web API. No --csv either; the header says why.
+          args:
+            - --locustfile
+            - /etc/locust/locustfile.py
+            - --web-host
+            - 0.0.0.0
+            - --web-port
+            - "8089"
+          env:
+            # The load script is mounted read-only, so the interpreter cannot write bytecode beside
+            # it. Python tolerates that silently; saying so explicitly keeps a failed write attempt
+            # out of the syscall stream the Monitor watches from M2 onward.
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+          ports:
+            - name: web
+              containerPort: 8089
+          volumeMounts:
+            - name: locustfile
+              mountPath: /etc/locust
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            # The same hardening the upstream Boutique manifests apply to every container, so the
+            # load generator is not the one workload in the cluster with a writable root filesystem
+            # and a full capability set. runAsNonRoot is deliberately NOT set: this image declares
+            # its user by name rather than by uid, and the kubelet cannot verify a named user is
+            # non-root, so setting it would fail the pod outright with "image has non-numeric user".
+            # Pinning a numeric runAsUser instead would guess at the image's uid and break on any
+            # rebuild that renumbers it.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              # Memory is capped; CPU deliberately is not. A throttled load generator delivers less
+              # load than its profile asks for and reports nothing about having done so, which would
+              # make `users` and `spawn_rate` a fiction exactly when the cluster is busiest -- that
+              # is, during the incident the run exists to measure. An OOM, by contrast, is loud.
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: web
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: web
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: locustfile
+          configMap:
+            name: locust-locustfile
+        # Paired with readOnlyRootFilesystem above. If Locust ever turns out to need a writable path
+        # this does not provide, the fix is another emptyDir at that path, not a writable root.
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: locust
+  namespace: locust
+  labels:
+    app: locust
+    app.kubernetes.io/name: locust
+spec:
+  # ClusterIP, not NodePort or LoadBalancer. The runner reaches the web API through a port-forward,
+  # which needs no ingress path and leaves the load generator unreachable from outside the cluster.
+  type: ClusterIP
+  selector:
+    app: locust
+  ports:
+    - name: web
+      port: 8089
+      targetPort: web

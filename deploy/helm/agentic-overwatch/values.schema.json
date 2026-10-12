@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "agentic-overwatch",
+  "description": "Values contract for the Agentic Overwatch packaging chart (docs/milestones/M8-hardening.md T8.1). guardian.token.* and guardian.auditLogPath are typed nullable here and enforced with Helm's `required` in the templates, mirroring guardian/app/config.py's own fail-closed behavior for the same fields.",
+  "type": "object",
+  "required": ["namespaces", "guardian", "monitor", "agents"],
+  "properties": {
+    "namespaces": {
+      "type": "object",
+      "required": ["guardian", "monitor", "agents", "boutique", "create"],
+      "properties": {
+        "guardian": { "type": "string", "minLength": 1 },
+        "monitor": { "type": "string", "minLength": 1 },
+        "agents": { "type": "string", "minLength": 1 },
+        "boutique": { "type": "string", "minLength": 1 },
+        "create": {
+          "type": "object",
+          "properties": {
+            "guardian": { "type": "boolean" },
+            "monitor": { "type": "boolean" },
+            "agents": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "guardian": {
+      "type": "object",
+      "required": ["mode", "executor", "token", "policy", "signingKey", "image"],
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 1 },
+        "mode": { "type": "string", "enum": ["G0-FULL", "G1-LOGONLY", "G2-SHAREDCRED"] },
+        "runId": { "type": "string" },
+        "registeredIssuers": { "type": "string" },
+        "executor": { "type": "string", "enum": ["fake", "kubernetes"] },
+        "token": {
+          "type": "object",
+          "properties": {
+            "ttlSeconds": { "type": ["integer", "null"], "minimum": 1 },
+            "maxTtlSeconds": { "type": ["integer", "null"], "minimum": 1 },
+            "algorithm": { "type": ["string", "null"] },
+            "replayCacheEntries": { "type": ["integer", "null"], "minimum": 1 },
+            "replayCacheWindowSeconds": { "type": ["integer", "null"], "minimum": 1 }
+          }
+        },
+        "policy": {
+          "type": "object",
+          "required": ["bundlePath", "entrypoint", "issuanceEntrypoint", "timeoutSeconds"],
+          "properties": {
+            "bundlePath": { "type": "string", "minLength": 1 },
+            "entrypoint": { "type": "string", "minLength": 1 },
+            "issuanceEntrypoint": { "type": "string", "minLength": 1 },
+            "timeoutSeconds": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        },
+        "auditLogPath": { "type": ["string", "null"] },
+        "replayStorePath": { "type": "string", "minLength": 1 },
+        "maxRequestBytes": { "type": ["string", "integer"] },
+        "signingKey": {
+          "type": "object",
+          "required": ["secretName", "secretKey"],
+          "properties": {
+            "secretName": { "type": "string", "minLength": 1 },
+            "secretKey": { "type": "string", "minLength": 1 }
+          }
+        },
+        "image": {
+          "type": "object",
+          "required": ["repository", "pullPolicy"],
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string" },
+            "digest": { "type": "string" },
+            "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+          }
+        },
+        "resources": { "type": "object" },
+        "audit": {
+          "type": "object",
+          "properties": {
+            "pvcSize": { "type": "string", "minLength": 1 },
+            "storageClassName": { "type": "string" }
+          }
+        },
+        "service": {
+          "type": "object",
+          "properties": {
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        }
+      }
+    },
+    "monitor": {
+      "type": "object",
+      "required": ["image", "aggregator", "auditForwarder", "evidence"],
+      "properties": {
+        "image": {
+          "type": "object",
+          "required": ["repository", "pullPolicy"],
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string" },
+            "digest": { "type": "string" },
+            "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+          }
+        },
+        "aggregator": {
+          "type": "object",
+          "properties": {
+            "replicas": { "type": "integer", "minimum": 1 },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "quotingEnabled": { "type": "boolean" },
+            "resources": { "type": "object" }
+          }
+        },
+        "auditForwarder": {
+          "type": "object",
+          "properties": {
+            "replicas": { "type": "integer", "minimum": 1 },
+            "severity": { "type": "string", "minLength": 1 }
+          }
+        },
+        "service": {
+          "type": "object",
+          "properties": {
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        },
+        "evidence": {
+          "type": "object",
+          "required": ["hostPath"],
+          "properties": {
+            "mode": { "type": "string", "enum": ["hostPath", "pvc"] },
+            "hostPath": { "type": "string", "minLength": 1 },
+            "pinToControlPlane": { "type": "boolean" },
+            "pvc": {
+              "type": "object",
+              "properties": {
+                "existingClaim": { "type": "string" },
+                "storageClassName": { "type": "string" },
+                "accessMode": { "type": "string", "enum": ["ReadWriteOnce", "ReadWriteMany", "ReadWriteOncePod"] },
+                "size": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "agents": {
+      "type": "object",
+      "required": ["networkPolicy", "g2"],
+      "properties": {
+        "modelAlias": { "type": "string" },
+        "manageDefaultServiceAccount": { "type": "boolean" },
+        "modelProvider": {
+          "type": "object",
+          "properties": {
+            "secretName": { "type": "string" },
+            "apiKeySecretKey": { "type": "string" },
+            "baseUrlSecretKey": { "type": "string" }
+          }
+        },
+        "networkPolicy": {
+          "type": "object",
+          "required": ["apiServerReach"],
+          "properties": {
+            "apiServerReach": { "type": "string", "enum": ["closed", "open"] }
+          }
+        },
+        "g2": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "podSecurityStandards": {
+      "type": "object",
+      "properties": {
+        "enforce": { "type": "string" },
+        "warn": { "type": "string" },
+        "audit": { "type": "string" }
+      }
+    },
+    "commonLabels": { "type": "object" }
+  }
+}

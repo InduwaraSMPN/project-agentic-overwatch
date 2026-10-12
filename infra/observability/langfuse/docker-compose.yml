@@ -1,0 +1,217 @@
+# infra/observability/langfuse/docker-compose.yml -- the self-hosted Langfuse v3 trace plane: the
+# LLM observability layer ADR-006 chose, running beside the kind cluster rather than inside it.
+#
+# NOT A VERSION LITERAL IN THIS FILE, AND THAT IS THE POINT
+#   Every image tag below is an interpolation. LANGFUSE_VERSION comes from infra/versions.env, the
+#   single pinning surface docs/03-tech-stack.md section 5 fixes and whose sha256 every sealed run
+#   bundle carries; the four datastore tags come from images.env in this directory, which
+#   LANGFUSE_STACK_IMAGES_FILE names from that same file. A version restated here would be a second
+#   home for it, and the day the two disagreed the digest in the bundle would describe a stack
+#   nobody ran. Both files are supplied as --env-file, so the invocation is part of the contract:
+#
+#     docker compose --env-file ../../versions.env --env-file images.env \
+#                    -f docker-compose.yml up -d
+#
+#   The directory's README.md carries the invocation in full, from the repository root, together
+#   with the .env that holds the credentials. Every tag is written in the required form
+#   ${VAR:?message}, so a compose run with a missing --env-file fails naming the key instead of
+#   resolving to an empty tag and pulling `latest` -- an unpinned bring-up that still works is the
+#   failure infra/observability/install.sh's "THE PIN CHECK IS THE POINT" paragraph refuses for the
+#   in-cluster releases, and it is refused here for the same reason.
+#
+# WHY COMPOSE AND NOT A HELM RELEASE IN THE KIND CLUSTER
+#   The full argument is in README.md. In one line: the trace plane observes the system under study
+#   and is not part of it, so putting it in the cluster would make it compete for the same node
+#   the RQ4 interference measure is taken over.
+#
+# NO CREDENTIAL IS COMMITTED HERE
+#   Upstream's compose ships working defaults marked "# CHANGEME" -- mysalt, mysecret, miniosecret,
+#   myredissecret. Every one of them is written below in the required form instead, with no default,
+#   so this file cannot start a stack whose secrets are the ones printed in a public repository. The
+#   values live in .env in this directory, which .gitignore covers, and README.md says how to
+#   generate them.
+#
+# STRUCTURE
+#   Six services, which is what Langfuse v3 is: a web container and a worker container from one
+#   release, plus Postgres for transactional state, ClickHouse for the trace and observation
+#   store, Redis for the ingestion queue and MinIO for event and media payloads. The four are not
+#   optional in v3 -- v2's single-container shape is gone -- which is why the pin file names four
+#   datastores rather than none.
+#
+# VOLUMES
+#   Bind mounts under ./volumes/, not named volumes. .gitignore covers
+#   infra/observability/langfuse/volumes/ exactly, so the state is visible in the working tree and
+#   inspectable when a bring-up misbehaves. `make nuke` explicitly removes only the four fixed
+#   datastore children after confirmation, rejecting symlinked ancestors; a named volume instead
+#   survives `docker compose down`, is invisible until `docker volume ls`, and would leave nuke's
+#   "including volumes" promise with an undeclared exception. The trade is that the host directories
+#   must exist before the first bring-up; README.md's mkdir line is that step.
+
+name: agentic-overwatch-langfuse
+
+services:
+
+  # The worker drains the Redis ingestion queue into ClickHouse and runs the ClickHouse migrations
+  # on start. It is listed first because langfuse-web shares its environment block by anchor, which
+  # YAML resolves in document order.
+  langfuse-worker:
+    image: docker.io/langfuse/langfuse-worker:${LANGFUSE_VERSION:?pass --env-file infra/versions.env}
+    restart: unless-stopped
+    depends_on: &langfuse-depends-on
+      postgres: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    ports:
+      # Loopback only. Every port in this file is bound to 127.0.0.1, including the web UI: the
+      # trace plane holds rendered prompts and model completions for every run, which is the most
+      # sensitive material this project produces, and a lab host is not a place to expose it on all
+      # interfaces. Upstream binds the web port to 0.0.0.0; this is a deliberate divergence.
+      - 127.0.0.1:3030:3030
+    environment: &langfuse-worker-env
+      # Connection strings. Hostnames are compose service names, so nothing here depends on a host
+      # port mapping and the loopback binding above is free.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set it in this directory's .env}@postgres:5432/${POSTGRES_DB:-postgres}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set it in this directory's .env}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ${REDIS_AUTH:?set it in this directory's .env}
+      # Application secrets. SALT hashes API keys at rest and ENCRYPTION_KEY encrypts stored
+      # provider credentials; both are required and neither has a default, on purpose.
+      SALT: ${LANGFUSE_SALT:?set it in this directory's .env}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?set it in .env -- openssl rand -hex 32}
+      NEXTAUTH_URL: ${LANGFUSE_URL:-http://localhost:3000}
+      # Off, deliberately. Upstream defaults it on, which posts anonymous usage statistics to
+      # Langfuse Cloud. Nothing in a dissertation artefact should phone home about the runs it is
+      # measuring, and the ethics disclosure ADR-005 already owes for free-tier provider ToS is not
+      # a reason to add a second outbound channel nobody declared.
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+      # Object storage for event and media payloads. MinIO speaks S3, so these are the S3 keys.
+      # The FORCE_PATH_STYLE flags are what make a non-AWS endpoint work at all.
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set it in this directory's .env}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      # The media endpoint is the one the BROWSER resolves, not the one the container does, which is
+      # why it is a host address where the event endpoint above is a service name.
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LANGFUSE_MINIO_PUBLIC_URL:-http://localhost:9090}
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set it in this directory's .env}
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+      LANGFUSE_S3_BATCH_EXPORT_ENABLED: "false"
+
+  # The web container serves the UI and the OTLP/ingestion API the collector and the SDK post to.
+  langfuse-web:
+    image: docker.io/langfuse/langfuse:${LANGFUSE_VERSION:?pass --env-file infra/versions.env}
+    restart: unless-stopped
+    depends_on: *langfuse-depends-on
+    ports:
+      - 127.0.0.1:3000:3000
+    environment:
+      <<: *langfuse-worker-env
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set it in .env -- openssl rand -base64 32}
+
+  # Transactional state: organisations, projects, API keys, users. Small, and the only one of the
+  # four whose loss would cost a re-issued project key rather than only re-runnable traces.
+  postgres:
+    image: docker.io/postgres:${LANGFUSE_POSTGRES_TAG:?pass --env-file images.env}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set it in this directory's .env}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    ports:
+      - 127.0.0.1:5432:5432
+    volumes:
+      - ./volumes/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # The trace and observation store: this is where a run's spans actually land, and it is the one
+  # service whose volume grows with the campaign.
+  #
+  # No `user:` line, which is a deliberate divergence from upstream. Upstream runs the container as
+  # 101:101 over a named volume Docker creates with matching ownership; these are bind mounts, and a
+  # host directory created by whoever ran mkdir is not owned by uid 101, so the same line here would
+  # fail on the first start for a reason that reads like a ClickHouse fault. Started as root the
+  # image's own entrypoint chowns /var/lib/clickhouse and drops privilege itself, which is the
+  # behaviour the bind mount needs.
+  clickhouse:
+    image: docker.io/clickhouse/clickhouse-server:${LANGFUSE_CLICKHOUSE_TAG:?pass --env-file images.env}
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set it in this directory's .env}
+    ports:
+      - 127.0.0.1:8123:8123
+      - 127.0.0.1:9000:9000
+    volumes:
+      - ./volumes/clickhouse/data:/var/lib/clickhouse
+      - ./volumes/clickhouse/logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # The ingestion queue between web and worker. noeviction is required rather than tuned: an
+  # eviction policy that dropped queued events would lose spans silently, and a trace plane that
+  # loses spans without saying so is worse than one that is down.
+  redis:
+    image: docker.io/redis:${LANGFUSE_REDIS_TAG:?pass --env-file images.env}
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_AUTH:?set it in this directory's .env}", "--maxmemory-policy", "noeviction"]
+    ports:
+      - 127.0.0.1:6379:6379
+    volumes:
+      - ./volumes/redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_AUTH\" ping | grep -q PONG"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+    environment:
+      REDIS_AUTH: ${REDIS_AUTH:?set it in this directory's .env}
+
+  # S3-compatible storage for raw event and media payloads.
+  #
+  # docker.io/minio/minio rather than upstream's cgr.dev/chainguard/minio, for one reason: the
+  # Chainguard image publishes no public version tag, only a rolling `latest`, so it cannot be
+  # pinned and the whole stack would move underneath a run. The entrypoint creates the bucket before
+  # starting the server, which is upstream's trick and avoids a separate mc init container.
+  minio:
+    image: docker.io/minio/minio:${LANGFUSE_MINIO_TAG:?pass --env-file images.env}
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set it in this directory's .env}
+    ports:
+      # 9090 rather than 9000 on the host, because ClickHouse already holds 9000 above.
+      - 127.0.0.1:9090:9000
+      - 127.0.0.1:9091:9001
+    volumes:
+      - ./volumes/minio:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+      start_period: 5s

@@ -1,0 +1,26 @@
+# Line-ending normalisation. Binding for every clone, including Windows hosts.
+#
+# Why this file exists (M0-T0.1, conflict C11): this repo is developed on a Windows host with
+# core.autocrlf=true, so without an explicit policy a fresh clone materialises the Makefile and
+# scripts/*.sh with CRLF line endings. GNU make rejects a CRLF recipe and /bin/sh under WSL2
+# rejects a CRLF script, so the checkout is broken before the first target runs. CI cannot catch
+# this: GitHub's actions/checkout sets core.autocrlf=false, so the Linux runner always sees LF
+# regardless of what a developer's clone contains. Normalising in the repository rather than in
+# each developer's git config is the only place the guarantee holds for everyone.
+#
+# Already-tracked files keep their recorded eol until the working tree is re-normalised; run that
+# as a deliberate, reviewable change rather than as a side effect of adding this file.
+
+* text=auto eol=lf
+Makefile text eol=lf
+*.sh text eol=lf
+*.env text eol=lf
+*.mk text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.mjs text eol=lf
+*.ts text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.rego text eol=lf
+*.pdf binary

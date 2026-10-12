@@ -1,0 +1,16 @@
+# Fixture manifest -- flat `key: value`, no nesting and no lists. See monitor/fixtures/README.md
+# for the format, the key set, and why the corpus_cap_* values are not evaluation-protocol values.
+fixture_id: k8s-audit-anonymous-exec
+source: k8s_audit
+provenance: synthesised
+synthesised_from: The audit.k8s.io/v1 Event field set given on the Kubernetes auditing task page and its linked API reference (level, auditID, stage, requestURI, verb, user, sourceIPs, userAgent, objectRef, responseStatus, requestReceivedTimestamp, stageTimestamp, annotations), cited in monitor/aggregator/sources/k8s_audit.py. No live API server has written these bytes.
+capture_commit:
+source_tool_version:
+seed:
+golden_arm: G0-FULL
+audit_severity: high
+corpus_cap_status: FIXTURE-CORPUS-TEST-PARAMETER
+corpus_cap_excerpt_count_max: 6
+corpus_cap_excerpt_length_max_chars: 160
+corpus_cap_summary_length_max_chars: 240
+description: Three audit records -- an anonymous exec into a Pod, a forbidden secrets list, and a non-resource /healthz probe that exercises the NonResourceURL subject. audit_severity is declared here because the audit stream carries no severity of its own and its level field is a verbosity setting; the per-rule assignment is authored at T2.4, so until then this fixture states the assignment explicitly rather than letting a default rank every audit event in the corpus.

@@ -1,0 +1,42 @@
+# infra/netpol/probe/namespace.yaml -- the throwaway namespace that holds the fixtures
+# scripts/netpol_proof.sh uses to prove that Cilium enforces NetworkPolicy. Part of milestone task
+# M1-T1.1.
+#
+# SCOPE BOUNDARY, STATED BECAUSE THE MILESTONE'S "[supports T-11]" INVITES CONFUSION
+#   M1 proves the *mechanism* and nothing else: that a NetworkPolicy object written into this
+#   cluster is watched by a CNI, is enforced in the datapath, and drops the flow it names for the
+#   reason it names. It does not confer any security property on the framework. The
+#   agent-namespace default-deny that actually closes traceability row T-11, together with the
+#   in-cluster API probe that demonstrates it, is M3-T3.5's work and lands beside this directory
+#   under infra/netpol/ when that task runs. Nothing in agents/, guardian/ or monitor/ depends on
+#   anything in here, and nothing in here should ever be reused as a production policy.
+#
+# WHY A SEPARATE NAMESPACE AND NOT `default`
+#   A default-deny ingress policy is a blunt instrument, and the proof applies and removes one
+#   repeatedly. Confining it to a namespace that exists only for the proof means the blast radius
+#   of a run -- or of a run that is interrupted before its cleanup -- is a namespace nothing else
+#   uses. It also makes the cleanup a single delete rather than a search for the objects a run
+#   created, and it gives the policy a natural boundary: `netpol-probe` selects pods in
+#   `netpol-probe`, so no policy written here can affect Online Boutique, the observability stack
+#   or kube-system.
+#
+# LIFECYCLE
+#   scripts/netpol_proof.sh applies this file if the namespace does not already exist, and deletes
+#   the namespace on exit only in that case. A namespace that was already present when the script
+#   started is left alone and the script says so on stdout, because deleting something the run did
+#   not create would be a surprise, and a proof script that surprises its operator is one nobody
+#   will run.
+#
+# WHAT BREAKS IF THIS CHANGES
+#   Renaming the namespace breaks the hardcoded name in scripts/netpol_proof.sh and the
+#   `namespace:` field of the three sibling files, which must all move in the same commit.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: netpol-probe
+  labels:
+    # Kept minimal on purpose. The proof selects pods by their own labels, never by namespace
+    # label, so nothing here is load-bearing; these two exist so that a `kubectl get ns -L` in a
+    # confused cluster says what this namespace is and who left it behind.
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: netpol-enforcement-probe

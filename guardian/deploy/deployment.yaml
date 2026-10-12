@@ -1,0 +1,133 @@
+# Guardian workload. Two Secrets are intentionally referenced, never declared: operators create
+# guardian-signing-key (HS256 token key) and guardian-audit-signing-key (Ed25519 audit-chain key,
+# ADR-130) out of band, so neither key's lifecycle is in source control. Runtime settings remain
+# runner-controlled through the guardian-runtime ConfigMap, which scripts/guardian_deploy.sh creates
+# for each run.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guardian
+  namespace: guardian
+  labels: &guardian-labels
+    app.kubernetes.io/name: guardian
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: guardian
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: guardian
+  template:
+    metadata:
+      labels: *guardian-labels
+    spec:
+      serviceAccountName: guardian
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: guardian
+          image: agentic-overwatch/guardian:local
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: guardian-runtime
+          env:
+            - name: GUARDIAN_SIGNING_KEY_FILE
+              value: /var/run/guardian-secrets/signing-key
+            # ADR-130: the Ed25519 audit-signing key. Setting this env makes the live Guardian sign
+            # its audit chain; config.py refuses to start if the path names no readable key, so the
+            # campaign never writes an unsigned chain while looking configured to sign.
+            - name: GUARDIAN_AUDIT_SIGNING_KEY_FILE
+              value: /var/run/guardian-audit-key/audit-signing-key
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: signing-key
+              mountPath: /var/run/guardian-secrets
+              readOnly: true
+            - name: audit-signing-key
+              mountPath: /var/run/guardian-audit-key
+              readOnly: true
+            - name: audit
+              mountPath: /var/lib/guardian/audit
+      volumes:
+        - name: signing-key
+          secret:
+            secretName: guardian-signing-key
+            defaultMode: 0440
+            items:
+              - key: signing-key
+                path: signing-key
+        - name: audit-signing-key
+          secret:
+            secretName: guardian-audit-signing-key
+            defaultMode: 0440
+            items:
+              - key: audit-signing-key
+                path: audit-signing-key
+        - name: audit
+          persistentVolumeClaim:
+            claimName: guardian-audit
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: guardian
+  namespace: guardian
+  labels:
+    app.kubernetes.io/name: guardian
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: guardian
+spec:
+  selector:
+    app.kubernetes.io/name: guardian
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: guardian-audit
+  namespace: guardian
+  labels:
+    app.kubernetes.io/name: guardian
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: guardian
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi

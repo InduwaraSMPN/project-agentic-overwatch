@@ -1,0 +1,108 @@
+# scenarios/chaosmesh/network-delay-frontend-to-adservice.yaml -- one fault primitive, one file.
+# This is the slow-dependency primitive SCN-CVE-05 uses: it adds egress latency on one directed
+# service-to-service path, frontend to adservice, and leaves every other path in the namespace alone.
+#
+# WHY A NEW FILE, RATHER THAN REPOINTING A SHARED ONE
+#   ADR-079 had SCN-CVE-05 share a checkout-to-payment delay primitive with SCN-SIM-03, and this file
+#   was written to give CVE-05 its own so that retargeting the shared file's selectors to
+#   frontend/adservice could not silently change SIM-03's fault surface out from under it. That shared
+#   primitive is gone: the orphan-CRD audit (plan section 1, V27; D7) found it referenced by no
+#   manifest once ADR-091 retargeted its other user, so it is deleted rather than wired in. This file
+#   therefore carries the whole slow-dependency role for the corpus, and the directory convention it
+#   states -- "a different degradation is a new primitive file with a new metadata.name, never an edit
+#   in place" -- applies at least as strongly to a change of TARGET EDGE as to a change of latency
+#   value.
+#
+# WHAT THIS PERTURBS
+#   The gRPC call frontend makes to adservice's `GetAds` method -- rendered on the home page (no
+#   context keys; random ads) and the product page (category context keys) -- and only that call.
+#   Neither pod is killed, neither container restarts, no replica goes missing and both Deployments
+#   stay fully Ready. A dependency that answers slowly rather than not at all is the failure that
+#   looks healthy from the control plane and shows up only in the request path, exercising a
+#   detection surface no PodChaos primitive in this corpus can reach.
+#
+# WHICH SCENARIO USES IT, AND WHY THIS EDGE SPECIFICALLY
+#   SCN-CVE-05. Without a degradation, verified recovery has nothing to verify: an exploited process
+#   isolated and replaced leaves the service exactly as it was, and "restore the SLO" becomes a
+#   fourth quarter every arm passes for free (ADR-034's own argument, restated for this pair).
+#   frontend-to-adservice is the real Boutique call edge the exploit itself rides -- the supervisor's
+#   own requirement for this scenario's redesign ("frontend calls adservice (AdService.GetAds) on the
+#   checkout/product path, so the exploit sits on a live edge") -- so the same edge that carries the
+#   exploit is the one whose degradation verified recovery measures the resolution of, which is a
+#   sharper pairing than ADR-079's design had: that one degraded checkout-to-payment while the exploit
+#   itself reached an unrelated co-located sidecar, two edges with no relationship to each other.
+#
+# SCOPED TO THE boutique NAMESPACE ON BOTH SIDES, AND THAT IS A HARD RULE
+#   metadata.namespace is boutique, the source selector carries namespaces: [boutique], and so does
+#   the target selector. NetworkChaos is the primitive where forgetting this costs the most: the
+#   Monitor, the Guardian, the agents and the trace plane all speak over the same cluster network
+#   from other namespaces, and a delay rule that escaped boutique would slow the instrument supposed
+#   to be observing the fault -- the measured degradation would then be partly the framework's own,
+#   with nothing in the run bundle recording which part. Both selectors are bounded because both
+#   decide.
+#
+# mode: one ON THE SOURCE, mode: all ON THE TARGET, AND THE ASYMMETRY IS THE POINT
+#   frontend runs two replicas (infra/boutique/kustomization.yaml); the source is `one` because a
+#   single frontend pod originating the degraded calls is the arity the ground truth describes -- the
+#   fault does not need every frontend replica slowed to be observable on the probe timeline, and
+#   scoping it to one keeps the OTHER frontend replica an uninvolved control the same way ADR-061
+#   argues for a scenario's surviving replicas generally. The target is `all`: adservice runs three
+#   replicas under this redesign (ADR-091), and the fault must apply to the frontend-to-adservice path
+#   regardless of which adservice replica answers a given call -- with a target of `one` and more than
+#   one adservice replica, whether a request is delayed would depend on load balancing, and the fault
+#   would become probabilistic across otherwise-identical seeded runs, which
+#   .agents/rules/20-parity-and-determinism.md forbids on a scenario path.
+#
+# THERE IS NO duration FIELD AND NO scheduler, AND THAT IS A DECISION
+#   Lifetime belongs to the applier: a `duration` here would put a second, wall-clock-shaped timeline
+#   beside the injection plan's logical one, and two timelines that can disagree make
+#   (scenario_id, seed) replay non-reproducible. Without a duration, this NetworkChaos runs until the
+#   applier deletes it.
+#
+# WHY latency IS A FAULT PARAMETER AND NOT A PROTOCOL CONSTANT
+#   The number below is the injected latency itself -- the independent variable the fault IS -- not a
+#   budget any measured value is compared against; docs/protocols/evaluation-protocol.md owns budgets
+#   and this directory never restates one. The value is carried over unchanged from the
+#   checkout-to-payment delay primitive ADR-079 shared and the orphan-CRD audit deleted (V27, D7): the
+#   same degradation shape is wanted here on a different edge, and there is no reason for the
+#   network-delay behaviour of this corpus to differ by edge. `correlation` and `jitter` are zero for
+#   the same reason: a non-zero value makes each packet's added delay depend on the previous
+#   packet's, an unseeded stochastic process rule 20 forbids on a scenario path.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   SCN-CVE-05's ground truth asserts detection, containment, eradication and verified recovery
+#   against THIS perturbation on THIS path with THIS latency. A different degradation is a new
+#   primitive file with a new metadata.name, referenced from the manifest's `primitives` list --
+#   never an edit in place.
+#
+# THE FORMAT IS DELIBERATELY SMALLER THAN YAML
+#   Block style only: no flow collections, no anchors or aliases, no tags, no multi-document files,
+#   no tabs. scenarios/schemas/yamlsubset.py is the offline reader these files are validated
+#   against, and it refuses everything outside that subset by design. The three delay values below
+#   are quoted strings: the Chaos Mesh API types them as strings, and quoting also keeps a bare `0`
+#   from being read as an integer by a reader that types its scalars.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-delay-frontend-to-adservice
+  namespace: boutique
+spec:
+  action: delay
+  mode: one
+  selector:
+    namespaces:
+      - boutique
+    labelSelectors:
+      app: frontend
+  direction: to
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - boutique
+      labelSelectors:
+        app: adservice
+  delay:
+    latency: "300ms"
+    correlation: "0"
+    jitter: "0ms"

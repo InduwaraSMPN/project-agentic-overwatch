@@ -1,0 +1,104 @@
+# G2-SHAREDCRED's scoped alternate identity. It is applied only by the runner. No token or
+# Secret is stored here: scripts/g2_credential.sh requests a bounded token at run time.
+#
+# ADR-131 / D17-A: this Role MIRRORS the Guardian's own incident-response Role in `boutique`
+# (guardian/deploy/rbac.yaml). C2 (G2-SHAREDCRED) removes the "sole credentials" invariant by design:
+# in this arm the agents hold, through the `g2-executor` credential, exactly the cluster-mutation
+# rights the Guardian holds -- so a direct path the Guardian never mediates can execute what the
+# Guardian could, which is the bypass C2 asks about. The rules below are therefore kept byte-for-byte
+# equal to the Guardian Role's; `guardian/tests/test_deployment_manifests.py::test_g2_role_mirrors_guardian_role`
+# fails on any drift. This was a `get,list` on pods in v1 (V7), which made G2 inert -- a credential
+# present but never usable to mutate -- so G2 decisions were indistinguishable from G0's.
+#
+# The blast radius is unchanged from the Guardian's: the Role is namespaced to `boutique`, so even a
+# fully exercised direct path can only reach the target application, and only in the one arm that mints
+# this token. The security-policy.md section 2.1 (D1-A / D17-A) row owns the lifetime, binding and
+# token-file rules; this file owns only the scope.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: g2-executor
+  namespace: agents
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: g2-shared-credential
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: g2-executor-guardian-mirror
+  namespace: boutique
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: g2-shared-credential
+# These rules mirror agentic-overwatch-guardian-incident-response in guardian/deploy/rbac.yaml exactly.
+# Keep them equal; the mirror test compares the two rule lists.
+rules:
+  # --- detection-and-investigation: read the environment -------------------------------------
+  - apiGroups: [""]
+    resources: ["pods", "services", "events"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list"]
+
+  # --- containment: quarantine a workload, at the label layer or the network layer ------------
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    resourceNames: ["boutique-escalation"]
+    verbs: ["bind"]
+
+  # --- containment, eradication and verified-recovery: change the controller's desired state ---
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch"]
+
+  # --- eradication: remove the compromised instance and any persistence it established ---------
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: g2-executor-guardian-mirror
+  namespace: boutique
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: g2-shared-credential
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: g2-executor-guardian-mirror
+subjects:
+  - kind: ServiceAccount
+    name: g2-executor
+    namespace: agents

@@ -1,0 +1,77 @@
+{
+  "campaign_id": "CAMP-20260914-gate-pilot",
+  "seeds": [101, 102, 103],
+  "load_profiles": ["LOAD-STEADY"],
+  "runs": [
+    {
+      "run_id": "RUN-G0-FULL-SCN-SIM-01-INJ-A-101",
+      "condition": "G0-FULL",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-A",
+      "seed": 101,
+      "is_baseline": false,
+      "baseline_run_id": "BASE-LOAD-STEADY-101",
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G1-LOGONLY-SCN-SIM-01-INJ-A-101",
+      "condition": "G1-LOGONLY",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-A",
+      "seed": 101,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G0-FULL-SCN-CVE-04-INJ-B-102",
+      "condition": "G0-FULL",
+      "scenario_id": "SCN-CVE-04",
+      "injection_condition": "INJ-B",
+      "seed": 102,
+      "is_baseline": false,
+      "baseline_run_id": "BASE-LOAD-STEADY-102",
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G1-LOGONLY-SCN-CVE-04-INJ-B-102",
+      "condition": "G1-LOGONLY",
+      "scenario_id": "SCN-CVE-04",
+      "injection_condition": "INJ-B",
+      "seed": 102,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G0-FULL-SCN-CVE-05-INJ-C-103",
+      "condition": "G0-FULL",
+      "scenario_id": "SCN-CVE-05",
+      "injection_condition": "INJ-C",
+      "seed": 103,
+      "is_baseline": false,
+      "baseline_run_id": "BASE-LOAD-STEADY-103",
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G1-LOGONLY-SCN-CVE-05-INJ-C-103",
+      "condition": "G1-LOGONLY",
+      "scenario_id": "SCN-CVE-05",
+      "injection_condition": "INJ-C",
+      "seed": 103,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    }
+  ],
+  "campaign_seed": 0,
+  "generated_order": [
+    "RUN-G0-FULL-SCN-SIM-01-INJ-A-101",
+    "RUN-G1-LOGONLY-SCN-SIM-01-INJ-A-101",
+    "RUN-G0-FULL-SCN-CVE-04-INJ-B-102",
+    "RUN-G1-LOGONLY-SCN-CVE-04-INJ-B-102",
+    "RUN-G0-FULL-SCN-CVE-05-INJ-C-103",
+    "RUN-G1-LOGONLY-SCN-CVE-05-INJ-C-103"
+  ],
+  "versions_env_sha256": "6c4ecbcc9eae7f00f62113135645079babc6d13a693317f4a90ff1d40d1a1dfa"
+}

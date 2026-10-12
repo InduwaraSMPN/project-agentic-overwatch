@@ -1,0 +1,16 @@
+# Fixture manifest -- flat `key: value`, no nesting and no lists. See monitor/fixtures/README.md
+# for the format, the key set, and why the corpus_cap_* values are not evaluation-protocol values.
+fixture_id: prometheus-alertmanager-webhook
+source: prometheus
+provenance: synthesised
+synthesised_from: The Alertmanager `webhook_config` body specified in the Prometheus alerting configuration reference (version, groupKey, truncatedAlerts, status, receiver, groupLabels, commonLabels, commonAnnotations, externalURL, alerts[] with status/labels/annotations/startsAt/endsAt/generatorURL/fingerprint), cited in monitor/aggregator/sources/prometheus.py. No live Alertmanager has posted these bytes.
+capture_commit:
+source_tool_version:
+seed:
+golden_arm: G0-FULL
+audit_severity:
+corpus_cap_status: FIXTURE-CORPUS-TEST-PARAMETER
+corpus_cap_excerpt_count_max: 6
+corpus_cap_excerpt_length_max_chars: 160
+corpus_cap_summary_length_max_chars: 240
+description: One grouped webhook body carrying three alerts, which is the record unit -- one EvidenceEvent per entry of alerts[], never one per notification. Covers all three severity labels the T2.3 rules may emit, the summary/description/message annotation preference order, the Pod and Deployment rungs of the subject ladder, and the node-exporter case that falls through to kind=Alert because it carries an instance label rather than any workload label.

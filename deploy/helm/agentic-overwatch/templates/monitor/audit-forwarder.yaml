@@ -1,0 +1,94 @@
+# Templated from monitor/deploy/audit-forwarder.yaml. Same init container (ADR-062: the
+# kube-apiserver writes k8s_audit.jsonl as root 0600; this hands it to the forwarder's uid) and
+# the same fixed severity classification. The aggregator URL is built from the same
+# namespace/port values the aggregator Service template uses, so the two stay consistent under
+# an override.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-forwarder
+  namespace: {{ .Values.namespaces.monitor }}
+  labels: &labels
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/name: audit-forwarder
+    app.kubernetes.io/component: monitor
+spec:
+  replicas: {{ .Values.monitor.auditForwarder.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: audit-forwarder
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      automountServiceAccountToken: false
+      {{- if .Values.monitor.evidence.pinToControlPlane }}
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: prepare-audit-log
+          image: {{ if .Values.monitor.image.digest }}{{ printf "%s@%s" .Values.monitor.image.repository .Values.monitor.image.digest }}{{ else }}{{ printf "%s:%s" .Values.monitor.image.repository .Values.monitor.image.tag }}{{ end }}
+          imagePullPolicy: {{ .Values.monitor.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              f={{ printf "%s/k8s_audit.jsonl" .Values.monitor.evidence.hostPath }}
+              if [ -e "$f" ]; then
+                chown 65532:65532 "$f"
+                chmod 0640 "$f"
+              fi
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: evidence
+              mountPath: {{ .Values.monitor.evidence.hostPath }}
+      containers:
+        - name: audit-forwarder
+          image: {{ if .Values.monitor.image.digest }}{{ printf "%s@%s" .Values.monitor.image.repository .Values.monitor.image.digest }}{{ else }}{{ printf "%s:%s" .Values.monitor.image.repository .Values.monitor.image.tag }}{{ end }}
+          imagePullPolicy: {{ .Values.monitor.image.pullPolicy }}
+          command: ["python", "-m", "monitor.audit_forwarder"]
+          env:
+            - name: MONITOR_AUDIT_PATH
+              value: {{ printf "%s/k8s_audit.jsonl" .Values.monitor.evidence.hostPath | quote }}
+            - name: MONITOR_AUDIT_URL
+              value: {{ printf "http://evidence-aggregator.%s.svc.cluster.local:%d/v1/k8s-audit" .Values.namespaces.monitor (.Values.monitor.aggregator.port | int) | quote }}
+            - name: MONITOR_AUDIT_SEVERITY
+              value: {{ .Values.monitor.auditForwarder.severity | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: evidence
+              mountPath: {{ .Values.monitor.evidence.hostPath }}
+              readOnly: true
+      volumes:
+        - name: evidence
+          {{- if eq .Values.monitor.evidence.mode "pvc" }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.monitor.evidence.pvc.existingClaim | default "monitor-evidence" }}
+          {{- else }}
+          hostPath:
+            path: {{ .Values.monitor.evidence.hostPath }}
+            type: Directory
+          {{- end }}

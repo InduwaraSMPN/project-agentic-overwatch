@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-forwarder
+  namespace: monitor
+  labels: &labels
+    app.kubernetes.io/name: audit-forwarder
+    app.kubernetes.io/component: monitor
+    app.kubernetes.io/part-of: agentic-overwatch
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: audit-forwarder
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # The kube-apiserver creates and appends k8s_audit.jsonl as root, mode 0600, on the
+      # control-plane node's evidence directory. The non-root forwarder (uid 65532) cannot read
+      # 0600 root:root on ext4. This root init container hands the file to the Monitor uid/gid so
+      # only the forwarder reads it; the root apiserver keeps appending regardless of ownership,
+      # and does not reset the mode on append (it creates the file once, at cluster creation). It
+      # runs no inference path, so .agents/rules/40 is untouched. See ADR-062.
+      initContainers:
+        - name: prepare-audit-log
+          image: agentic-overwatch/evidence-aggregator:local
+          imagePullPolicy: Never
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              f=/var/lib/overwatch/evidence/k8s_audit.jsonl
+              # No-op before the apiserver has created the file (a fresh cluster): the forwarder
+              # tolerates absence and retries. 0640, not 0644: only the Monitor uid/gid reads it.
+              if [ -e "$f" ]; then
+                chown 65532:65532 "$f"
+                chmod 0640 "$f"
+              fi
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            # Read-write (the main container mounts the same volume read-only) so the init can
+            # chmod/chown the audit file. Reuses the existing 'evidence' volume — adds none.
+            - name: evidence
+              mountPath: /var/lib/overwatch/evidence
+      containers:
+        - name: audit-forwarder
+          image: agentic-overwatch/evidence-aggregator:local
+          imagePullPolicy: Never
+          command: ["python", "-m", "monitor.audit_forwarder"]
+          env:
+            - name: MONITOR_AUDIT_PATH
+              value: /var/lib/overwatch/evidence/k8s_audit.jsonl
+            - name: MONITOR_AUDIT_URL
+              value: http://evidence-aggregator.monitor.svc.cluster.local:8080/v1/k8s-audit
+            # Build control must assign the selecting policy rule's severity before live ingestion.
+            # Kubernetes audit `level` is record verbosity and is never used as severity.
+            - name: MONITOR_AUDIT_SEVERITY
+              # Conservative engineering classification for the write-focused audit stream.
+              # Split streams per selecting policy rule if live calibration needs finer severity.
+              value: high
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: evidence
+              mountPath: /var/lib/overwatch/evidence
+              readOnly: true
+      volumes:
+        - name: evidence
+          hostPath:
+            path: /var/lib/overwatch/evidence
+            type: Directory

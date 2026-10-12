@@ -1,0 +1,85 @@
+# Templated from guardian/deploy/deployment.yaml. Same security context, probes, volumes and
+# resource shape; only the image reference, namespace, replica count, resource sizing and PVC
+# size are parameterized. The signing-key Secret is referenced by name/key only and is never
+# created by this chart -- see values.yaml guardian.signingKey and NOTES.txt.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guardian
+  namespace: {{ .Values.namespaces.guardian }}
+  labels: &guardian-labels
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/name: guardian
+    app.kubernetes.io/component: guardian
+spec:
+  replicas: {{ .Values.guardian.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: guardian
+  template:
+    metadata:
+      annotations:
+        # Roll the pod whenever the runtime ConfigMap changes (e.g. a guardian.mode flip via
+        # `helm upgrade`), so GUARDIAN_MODE is re-read at process start rather than silently
+        # unchanged -- config.py::_parse_mode reads it once at startup. Without this a mode flip
+        # needs an explicit `kubectl rollout restart` (see docs/ops/shadow-mode.md section 3.5).
+        checksum/config-runtime: {{ include (print $.Template.BasePath "/guardian/configmap-runtime.yaml") . | sha256sum }}
+      labels: *guardian-labels
+    spec:
+      serviceAccountName: guardian
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: guardian
+          image: {{ if .Values.guardian.image.digest }}{{ printf "%s@%s" .Values.guardian.image.repository .Values.guardian.image.digest }}{{ else }}{{ printf "%s:%s" .Values.guardian.image.repository .Values.guardian.image.tag }}{{ end }}
+          imagePullPolicy: {{ .Values.guardian.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.guardian.service.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: guardian-runtime
+          env:
+            - name: GUARDIAN_SIGNING_KEY_FILE
+              value: /var/run/guardian-secrets/signing-key
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources:
+            {{- toYaml .Values.guardian.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: signing-key
+              mountPath: /var/run/guardian-secrets
+              readOnly: true
+            - name: audit
+              mountPath: /var/lib/guardian/audit
+      volumes:
+        - name: signing-key
+          secret:
+            secretName: {{ .Values.guardian.signingKey.secretName }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.guardian.signingKey.secretKey }}
+                path: signing-key
+        - name: audit
+          persistentVolumeClaim:
+            claimName: guardian-audit

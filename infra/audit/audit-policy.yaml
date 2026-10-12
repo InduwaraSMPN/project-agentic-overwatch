@@ -1,0 +1,102 @@
+# Kubernetes API audit policy for Monitor ingestion.
+# `level` controls record detail, never EvidenceEvent severity. The ingestion
+# boundary assigns severity from the matching rule category; it must not infer
+# severity from Metadata/Request/RequestResponse (ADR-019).
+apiVersion: audit.k8s.io/v1
+kind: Policy
+omitStages:
+  - RequestReceived
+rules:
+  # Do not record routine liveness, discovery, or metrics traffic.
+  - level: None
+    nonResourceURLs:
+      - /healthz*
+      - /livez*
+      - /readyz*
+      - /metrics
+      - /version
+  - level: None
+    userGroups:
+      - system:nodes
+    verbs: [get, list, watch]
+  # Preserve request bodies for credential and authority changes.
+  - level: RequestResponse
+    verbs: [create, update, patch, delete, deletecollection]
+    resources:
+      - group: rbac.authorization.k8s.io
+        resources: [clusterrolebindings, rolebindings, clusterroles, roles]
+      - group: ""
+        resources: [secrets, serviceaccounts]
+  # Pod exec/attach/port-forward requests are high-value API-plane evidence.
+  - level: Request
+    verbs: [create]
+    resources:
+      - group: ""
+        resources: [pods/exec, pods/attach, pods/portforward]
+
+  # --- M10 V28 / D1-A: log every mutation the Guardian's Role (and the G2 mirror) can make ------
+  #
+  # In v1 the catch-all below recorded no workload mutation at all, so an executed Guardian action
+  # and a direct G2 action left no API-server record and were equally invisible to the API-plane
+  # (V28). guardian/audit/k8s_crosscheck.py (ADR-137) needs that second, independent record to hold
+  # against the Guardian's own chain, and G2's `shared_credential_exercised` is derived from it. So
+  # the rules below log exactly the (resource, verb) pairs the Guardian's incident-response Role in
+  # `boutique` grants (guardian/deploy/rbac.yaml), which the g2-executor Role mirrors byte-for-byte
+  # (D17-A, guardian/deploy/g2-rbac.yaml). The set is kept equal to that Role;
+  # infra/tests/test_audit_policy_covers_guardian_verbs.py fails on drift.
+  #
+  # patch and update on apps/deployments are logged at Request level so the replica count is visible
+  # in the body -- D4-A's scale-to-zero detection and the runner's window-open/close sentinel patch
+  # (a logged annotation on a Deployment) both depend on seeing it. Placed first so first-match wins
+  # over the Metadata rule that follows. update is logged as well as patch even though the executor's
+  # image-update reaches the API as a patch, because the cross-check reads what the API server saw and
+  # a direct-path caller may use either verb.
+  - level: Request
+    verbs: [patch, update]
+    resources:
+      - group: apps
+        resources: [deployments]
+
+  # Everything else the Role can touch, at Metadata level, for every user. Reads (get/list) and the
+  # remaining writes (pods patch/delete, networkpolicies create/delete, jobs/cronjobs delete) land
+  # here; rolebindings writes were already captured at RequestResponse by the RBAC rule above, and
+  # rolebindings `get` lands here. Metadata rather than Request keeps request bodies out of the log
+  # for everything but the deployment replica count above, which is all the cross-check needs (it
+  # matches on verb, object and time, never on the body).
+  #
+  # ADR-064's throughput concern -- a Metadata catch-all starved the forwarder with controller churn
+  # -- is answered by D16-A rather than reopened: monitor/audit_forwarder.py (WS-3, monitor agent)
+  # applies the v1 scope before each POST, so what the Monitor forwards is unchanged and only
+  # k8s_api_audit.jsonl carries the widened set. This rule is scoped to the Guardian Role's own
+  # resources, not a catch-all over every group, so the churn ADR-064 measured (lease/endpointslice/
+  # status writes cluster-wide) still falls to the final None below.
+  - level: Metadata
+    resources:
+      - group: ""
+        resources: [pods, pods/log, services, events]
+      - group: apps
+        resources: [deployments, replicasets]
+      - group: batch
+        resources: [jobs, cronjobs]
+      - group: discovery.k8s.io
+        resources: [endpointslices]
+      - group: networking.k8s.io
+        resources: [networkpolicies]
+      - group: rbac.authorization.k8s.io
+        resources: [rolebindings]
+
+  # Everything else is not recorded. The earlier rules already capture the API-plane
+  # signals the scenario corpus is scored on -- RBAC and credential-object writes
+  # (RequestResponse), pod exec/attach/port-forward (Request), and now every mutation the
+  # Guardian Role and the G2 mirror can make (V28/D1-A above). A former catch-all that
+  # recorded *every* other create/update/patch/delete at Metadata level was removed
+  # (ADR-064): on this cluster it emitted ~5 records/s of pure controller churn (leader-
+  # election lease updates dominate, plus replicaset/endpointslice/status writes), which
+  # (a) is the "raw data" dissertation §3.4.1 says the Monitor must NOT forward -- it is to
+  # forward "curated evidence" -- and (b) starved the audit forwarder: one live run's
+  # collation window held ~1300 such records against the forwarder's synchronous
+  # ~200 ms/record throughput, so it never drained to the injection's own audit record at
+  # the tail and the agents were handed only controller noise. The M10 rules above are
+  # scoped to the Guardian Role's resources, not a catch-all, and D16-A filters the Monitor's
+  # own input back to the v1 scope, so the injection still reaches the Orchestrator.
+  - level: None

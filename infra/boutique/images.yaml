@@ -1,0 +1,182 @@
+# infra/boutique/images.yaml -- the digest pins for every container image Online Boutique runs in
+# this cluster. This is the file infra/versions.env's BOUTIQUE_IMAGE_DIGESTS_FILE names.
+#
+# A TAG IS NOT A PIN
+#   The upstream base references its images by the tag v0.10.6, and a registry tag is a mutable
+#   pointer: nothing prevents the same tag resolving to different bytes next month, and nothing in a
+#   sealed run bundle would record that it had. NFR1's clean-machine reproducibility and the
+#   provenance row T-15 both rest on the claim that two runs weeks apart executed the same software.
+#   A digest is the only reference that makes that claim checkable, because it is the content hash
+#   of the image manifest itself: name@sha256:... either resolves to those exact bytes or fails to
+#   resolve at all.
+#
+# HOW THESE DIGESTS WERE OBTAINED
+#   Each is the Docker-Content-Digest header returned by a registry v2 manifest request for the
+#   service's v0.10.6 tag -- that is, the registry's own answer to "what does this tag point at",
+#   not a value computed or copied from anywhere else. The Boutique images are published as
+#   single-platform linux/amd64 manifests, which is what kind's node containers run on this
+#   project's WSL2 host; a host of a different architecture would need these resolved again, and
+#   that would be a stack change rather than a re-pin. The redis digest is a multi-platform index
+#   digest and is architecture independent.
+#
+#   To re-resolve one by hand, without pulling the image, send a HEAD request for the tag's manifest
+#   to the registry and read the Docker-Content-Digest header back:
+#     us-central1-docker.pkg.dev/v2/online-boutique-ci/microservices-demo/frontend/manifests/v0.10.6
+#   with an Accept header of application/vnd.docker.distribution.manifest.v2+json. The registry
+#   serves these anonymously; no credential is needed and none belongs in this repository.
+#
+# WHY BUILTIN TRANSFORMER DOCUMENTS AND NOT AN images: LIST
+#   Kustomize's images: field lives inside a kustomization.yaml or a Component, and a Component is a
+#   directory rather than a file -- so neither could be the file named images.yaml that
+#   BOUTIQUE_IMAGE_DIGESTS_FILE has to point at. The transformers: field does accept a plain YAML
+#   path, and the transformer it accepts for this job is the builtin ImageTagTransformer. That
+#   plugin takes a single imageTag mapping and has no plural form -- verified against the plugin's
+#   own definition for the Kustomize in play (kubectl v1.36.1 embeds Kustomize v5.8.1), not assumed
+#   -- so each image is its own YAML document with its own metadata.name. The repetition is the
+#   price of the file being a file.
+#
+# newName REPEATS name ON EVERY ENTRY, DELIBERATELY
+#   Kustomize would accept name plus digest alone and leave the repository path untouched. Writing
+#   newName out anyway makes each entry state the complete reference that will be deployed instead
+#   of half of it, so a reader checking what actually runs reads one line rather than reconstructing
+#   it from the upstream base. It also means a future registry move -- upstream has changed the
+#   project segment of these paths before -- is one edit per entry in one file.
+#
+# WHAT IS DELIBERATELY ABSENT
+#   loadgenerator. It is the one image the upstream base builds that this overlay does not run:
+#   remove-loadgenerator.yaml deletes the Deployment, for the reasons that file gives. Pinning an
+#   image for a workload the sibling file deletes would put a contradiction inside one directory,
+#   and a reader would be right to wonder which of the two is current. The absence is the assertion.
+#
+#   busybox, the init container of that same loadgenerator Deployment, is absent for the same reason
+#   -- and it is worth noting that upstream already pins it by digest, so the practice here is
+#   upstream's own rather than a local invention.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Editing a digest without a matching entry in the decisions log makes every previously sealed
+#   bundle's versions digest describe a stack that is no longer deployed, and nothing detects it:
+#   runs keep completing. Removing the file makes the application a moving target. Adding an entry
+#   whose name matches nothing in the base is a silent no-op -- Kustomize does not fail on an
+#   unmatched image -- so a typo here is caught only by the M1 verification step that asserts every
+#   running pod's image is a digest reference.
+#
+# RE-PINNING PROCEDURE, because doing this by halves is the failure mode
+#   Bump ?ref= in kustomization.yaml, BOUTIQUE_MANIFEST_REF in infra/versions.env and every digest
+#   below in one commit. The first two are held together by a test; the digests are not, because
+#   nothing offline can tell a stale digest from a current one. Re-resolve them all rather than the
+#   ones that look like they changed.
+
+apiVersion: builtin
+kind: ImageTagTransformer
+metadata:
+  name: pin-adservice
+imageTag:
+  name: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/adservice
+  newName: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/adservice
+  digest: sha256:f580c4853e896dd2083f0c270c4b7aa5feda6dd56058a93b87d0c88334a4c07d
+
+---
+apiVersion: builtin
+kind: ImageTagTransformer
+metadata:
+  name: pin-cartservice
+imageTag:
+  name: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/cartservice
+  newName: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/cartservice
+  digest: sha256:b5c29ddb3238474ea8d1842f07004fedeeae47f660627ab111a613a681cd0356
+
+---
+apiVersion: builtin
+kind: ImageTagTransformer
+metadata:
+  name: pin-checkoutservice
+imageTag:
+  name: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/checkoutservice
+  newName: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/checkoutservice
+  digest: sha256:ab40699b6d9e45c9a93b5427008f327fbe912465361e2ff7a1a1be7111e36134
+
+---
+apiVersion: builtin
+kind: ImageTagTransformer
+metadata:
+  name: pin-currencyservice
+imageTag:
+  name: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/currencyservice
+  newName: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/currencyservice
+  digest: sha256:7b2f3f804555c926861d67cd22c1b7c9e32d46b81cf1a64dd3089ae424d73be9
+
+---
+apiVersion: builtin
+kind: ImageTagTransformer
+metadata:
+  name: pin-emailservice
+imageTag:
+  name: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/emailservice
+  newName: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/emailservice
+  digest: sha256:77fd45d411b3550cbd39e30bda83ed6ea23d87fd6e58e69cf9fa2808e003984d
+
+---
+apiVersion: builtin
+kind: ImageTagTransformer
+metadata:
+  name: pin-frontend
+imageTag:
+  name: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/frontend
+  newName: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/frontend
+  digest: sha256:c06df08eccd78568a37292cfbe889df42fac48691b7fb05f2deeba0ae8d669ef
+
+---
+apiVersion: builtin
+kind: ImageTagTransformer
+metadata:
+  name: pin-paymentservice
+imageTag:
+  name: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/paymentservice
+  newName: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/paymentservice
+  digest: sha256:735b6d3255e2c74b0135a95cfc2337987e492f24e163c0bb9a853635876993c4
+
+---
+apiVersion: builtin
+kind: ImageTagTransformer
+metadata:
+  name: pin-productcatalogservice
+imageTag:
+  name: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/productcatalogservice
+  newName: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/productcatalogservice
+  digest: sha256:fb8568ecfc948717eb07746a6ce360fb8e5f906ae8a874cbad666891f0d21790
+
+---
+apiVersion: builtin
+kind: ImageTagTransformer
+metadata:
+  name: pin-recommendationservice
+imageTag:
+  name: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/recommendationservice
+  newName: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/recommendationservice
+  digest: sha256:5d8321f2d24132889f654f75308e541b0626e6ae0cbacf81b170e5eb0921b415
+
+---
+apiVersion: builtin
+kind: ImageTagTransformer
+metadata:
+  name: pin-shippingservice
+imageTag:
+  name: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/shippingservice
+  newName: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/shippingservice
+  digest: sha256:8527bafff8c8776e345f2dca0641f6e8595b053ce67f9a5af66f5a85d9eaca9d
+
+---
+# redis-cart, the cart service's backing store. It is the one image in the base referenced by a
+# floating upstream tag -- redis:alpine, which moves with every Redis release -- so it is also the
+# one entry here whose pin genuinely changes what runs rather than merely recording it. The digest
+# below is what redis:alpine resolved to when this file was written; the image behind it reports
+# REDIS_VERSION=8.10.1. This is a multi-platform index digest, so it is valid on any node
+# architecture.
+apiVersion: builtin
+kind: ImageTagTransformer
+metadata:
+  name: pin-redis
+imageTag:
+  name: redis
+  newName: redis
+  digest: sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576

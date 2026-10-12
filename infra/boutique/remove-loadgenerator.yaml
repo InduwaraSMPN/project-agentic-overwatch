@@ -1,0 +1,79 @@
+# infra/boutique/remove-loadgenerator.yaml -- deletes the loadgenerator Deployment that Online
+# Boutique's own base ships, so that the only traffic reaching the application is traffic this
+# project asked for.
+#
+# WHY THE WORKLOAD GOES
+#   Upstream bundles a Locust-based load generator and starts it with the application: at the
+#   pinned release its Deployment runs with USERS=10 and RATE=1 from the moment the base is applied,
+#   with no way to pause it short of scaling the Deployment to zero. Left in place it would break
+#   three things at once.
+#
+#   It corrupts the RQ4 interference measure. docs/protocols/evaluation-protocol.md section 3
+#   defines interference as the latency and error-rate delta between a framework-on run and a
+#   framework-off baseline under the same load profile. Both terms of that delta would carry an
+#   uncontrolled second traffic source, and the two terms would not carry the same amount of it,
+#   because the bundled generator's pacing responds to how loaded the application already is.
+#
+#   It makes `load_profile_id` a fiction. That manifest field names the profile a run was driven
+#   under (docs/protocols/data-management.md section 2) and is the field the campaign validator
+#   matches a framework-on run to its baseline on. If a second generator is also driving the
+#   frontend, the field names a fraction of the load rather than the load.
+#
+#   It fights the incident scenarios. From M5 onward a run injects a fault and watches the framework
+#   respond. A load generator that keeps hammering a degrading service changes the failure's shape
+#   in a way that varies with timing, which is the opposite of the reproducibility
+#   .agents/rules/20-parity-and-determinism.md requires of a scenario.
+#
+#   What replaces it is infra/locust/, which deploys Locust into its own namespace in an idle state
+#   and is driven per run from the profile registry. Same tool, same kind of load; the difference is
+#   that the run decides when it starts and at what concurrency, and the run records which profile
+#   it used.
+#
+# WHY DELETION RATHER THAN `replicas: 0`
+#   Scaling to zero leaves a Deployment whose replica count anything -- a later overlay, an
+#   operator, a stray `kubectl scale`, an upstream base bump -- can put back without the change
+#   looking like the reintroduction of a traffic source. It also leaves the workload listed by
+#   `kubectl get deploy`, so the M1 verification step "no loadgenerator in namespace boutique" would
+#   have to be written as a replica-count check rather than an existence check, and a replica-count
+#   check reads as an accident where an absence reads as a decision.
+#
+# HOW THE DELETION IS SPELLED
+#   `$patch: delete` is Kustomize's strategic-merge directive for removing a resource that a base
+#   contributed. The patch document carries the target's apiVersion, kind and metadata.name and
+#   nothing else -- those three fields are the selector, so a rename upstream turns this into a
+#   patch that matches nothing. Kustomize does not fail a patch that selects no resource, so that
+#   failure would be silent here and loud one step later, at the M1 check that asserts no
+#   loadgenerator Deployment exists in the namespace. That check is what actually guards this file.
+#
+#   Verified against the Kustomize in play rather than assumed: kubectl v1.36.1 embeds Kustomize
+#   v5.8.1, and the same spelling is what upstream's own `without-loadgenerator` component uses at
+#   the pinned release.
+#
+# THE SERVICEACCOUNT GOES WITH THE DEPLOYMENT
+#   The upstream base contributes two loadgenerator objects, a Deployment and the ServiceAccount it
+#   runs as, and deleting only the first leaves an unused identity sitting in the namespace. That is
+#   not merely untidy. From M2 the Monitor watches this namespace and the Kubernetes audit stream
+#   for exactly this class of thing -- a service account nothing runs as is what a compromised
+#   workload would like to find -- so leaving one behind seeds the evidence corpus with a permanent
+#   false positive that every scenario would then have to be tuned around. Both deletions therefore
+#   live in this file, as two documents in one patch; Kustomize applies each document in a patch
+#   file as its own strategic-merge patch, which was verified by rendering the overlay rather than
+#   assumed.
+#
+# WHAT BREAKS IF THIS FILE IS REMOVED
+#   Every interference and overhead figure in Chapter 5 silently acquires a second, uncontrolled
+#   traffic source, and nothing in the pipeline notices: the runs complete, the bundles seal, the
+#   statistics run. That is why the deletion is a tracked file with a rationale rather than a step
+#   in a script.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgenerator
+$patch: delete
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: loadgenerator
+$patch: delete

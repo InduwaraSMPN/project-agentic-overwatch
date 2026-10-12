@@ -1,0 +1,90 @@
+# scenarios/chaosmesh/pod-kill-checkoutservice.yaml -- one fault primitive, one file. This is the
+# abrupt-termination primitive: it deletes a checkoutservice pod outright, with no grace period, so
+# the workload disappears between one request and the next rather than draining.
+#
+# WHAT THIS PERTURBS
+#   A single checkoutservice pod, killed. The Deployment's controller replaces it, so the observable
+#   is a replica gap and the error window between the kill and the replacement becoming Ready --
+#   which is exactly the shape SCN-SIM-03's first signal reads. Nothing else in the namespace is
+#   touched: the eleven Boutique services keep running, the load driver keeps driving, and the only
+#   difference between the perturbed and unperturbed cluster is one pod's lifetime.
+#
+# WHICH SCENARIO USES IT
+#   SCN-SIM-03. Its first signal is Prometheus: the injected fault degrades checkoutservice and the
+#   detection surface is a replicas-mismatch plus an error-rate alert, not a Falco rule and not an
+#   audit record. checkoutservice is the target rather than a leaf service because it is the one
+#   Boutique service that fans out to five others -- cart, currency, product catalog, payment and
+#   shipping -- so its absence is visible in the metric plane without needing a synthetic probe.
+#
+# SCOPED TO THE boutique NAMESPACE, AND THAT IS A HARD RULE
+#   metadata.namespace is boutique and the selector names namespaces: [boutique] as its own block.
+#   Chaos Mesh will happily select across namespaces when told to; a fault that can escape the
+#   target namespace is a fault that perturbs the framework it is meant to be measured against --
+#   the agents, the Guardian, the Monitor and the trace plane all run outside boutique, and a chaos
+#   experiment that reached them would produce a run whose degradation is partly the instrument's.
+#   The namespace bound is therefore restated in every one of these files rather than assumed from
+#   metadata.namespace alone, because the selector is what actually decides.
+#
+# mode: one, NOT mode: all
+#   One pod, chosen by the label selector. checkoutservice runs three replicas (ADR-061), so `all`
+#   would be a full-service outage where `one` stays the single-pod fault the ground truth
+#   describes -- the two now select different things, and the arity below is load-bearing rather
+#   than merely correct. It was written that way while the Deployment still ran one replica, on the
+#   reasoning that declaring the arity the scenario needs, rather than the arity that happens to be
+#   equivalent today, is what keeps this file honest across a replica change nobody remembers to
+#   revisit. ADR-061 is that change, and nothing here had to move for it.
+#
+#   Three replicas is also what makes this fault the degradation the slate reads rather than an
+#   outage: killing one of three drops checkoutservice below its replica count, which is the
+#   `KubeDeploymentReplicasMismatch` shape ADR-034 names as SCN-SIM-03's first signal. At one
+#   replica the same kill was a total outage wearing a degradation's label.
+#
+# THERE IS NO duration FIELD AND NO scheduler, AND THAT IS A DECISION
+#   Lifetime belongs to the applier. The injection plan owns WHEN things happen -- as logical
+#   offsets in integer milliseconds from t0 -- and the teardown owns when they stop; a CRD carrying
+#   its own `duration` would put a second, wall-clock-shaped timeline beside the plan's logical one,
+#   and two timelines that can disagree make (scenario_id, seed) replay non-reproducible. The same
+#   argument infra/locust/profiles.yaml lines 28-41 make for refusing a `duration` key in the load
+#   registry applies here unchanged: how long a perturbation runs is a property of the run, not of
+#   the perturbation's shape. A `scheduler:`/cron block is refused for the sharper form of the same
+#   reason -- it would put the wall clock inside the fault itself.
+#
+#   For this primitive the point is nearly moot, since pod-kill is a one-shot action rather than a
+#   continuous condition, and it is stated anyway: the rule is the file set's, not the primitive's.
+#
+# gracePeriod IS A FAULT PARAMETER, NOT A PROTOCOL CONSTANT
+#   Zero seconds means SIGKILL with no drain. That number describes what kind of failure this is --
+#   a crash, not a rolling restart -- in the same way infra/locust/profiles.yaml's `users` describes
+#   the load shape rather than parameterising the experiment. It is not a threshold, a budget, a
+#   latency target or a seed: none of those may appear in this directory, because
+#   .agents/rules/00-source-of-truth.md single-homes every such quantity in
+#   docs/protocols/evaluation-protocol.md. Changing gracePeriod changes the fault; changing a
+#   threshold changes the measurement, and this file may only do the first.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   The ground truth for SCN-SIM-03 asserts a detection, a containment, an eradication and a
+#   verified recovery against THIS perturbation. Retargeting the label selector, widening the mode
+#   or adding a duration redefines what every already-sealed bundle naming that scenario was
+#   measured under, while the scenario identifier keeps saying the same thing. A different fault is
+#   a new primitive file with a new metadata.name, referenced from the manifest's `primitives` list
+#   -- never an edit in place.
+#
+# THE FORMAT IS DELIBERATELY SMALLER THAN YAML
+#   Block style only: no flow collections, no anchors or aliases, no tags, no multi-document files,
+#   no tabs. scenarios/schemas/yamlsubset.py is the reader these files are validated against offline
+#   and it refuses everything outside that subset by design, so a document a conforming YAML parser
+#   would read differently from this one fails loudly instead of being guessed at.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: pod-kill-checkoutservice
+  namespace: boutique
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+      - boutique
+    labelSelectors:
+      app: checkoutservice
+  gracePeriod: 0

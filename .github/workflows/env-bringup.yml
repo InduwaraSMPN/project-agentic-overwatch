@@ -1,0 +1,425 @@
+# Fresh-clone environment bring-up. Proves that `make up` reconstructs the whole substrate --
+# kind, Cilium as the sole CNI, Online Boutique at pinned digests, Locust, and the
+# Prometheus/kube-state-metrics/Grafana trio -- on a machine that has never seen this
+# repository, from nothing but the pins in infra/versions.env.
+#
+# WHAT THIS WORKFLOW PROVES, AND WHAT IT DELIBERATELY DOES NOT
+#   It proves the substrate, and it runs under UP_PROFILE=substrate, which is exactly that claim
+#   and no more. The Guardian is NOT part of this proof. It cannot be: scripts/guardian_deploy.sh
+#   refuses to deploy without `guardian-signing-key`, and ADR-114 forbids every repository path
+#   from creating that key, so a hosted runner has nothing to provision from and every run since
+#   the key became mandatory has failed at layer 10 with "guardian-signing-key is absent". The
+#   choice was to bend ADR-114 or to state the profile honestly. This workflow states it: the
+#   Guardian is declared `required_in: full` in infra/status/components.yaml, `make up` skips its
+#   layer with a `progress` line naming the skip, and `make status` counts it `not-required`
+#   rather than `absent`. The Guardian remains proven on the VM and in P0-live, which is where a
+#   live Guardian is actually needed. ADR-148 records the decision and the rejected alternatives.
+#
+# This is traceability row T-16's verifying check ("fresh-clone CI job `make up`") and its
+# evidence column ("CI log") in docs/05-traceability-matrix.md, and the machine half of
+# milestone M1's Definition-of-done line "`make up` succeeds from a clean machine".
+#
+# WHY THIS IS A SECOND WORKFLOW AND NOT A FIFTH JOB IN ci.yml
+#   docs/04-repo-conventions.md section 4 fixes ci.yml at four named jobs and states without
+#   qualification that "a gated check is always a step, never a job", because a job whose `if`
+#   is false still appears on the pull request as a skipped entry and that permanent noise is
+#   the whole reason for the four-job shape. But the alternative the section prescribes -- a
+#   guarded step inside an existing job -- is worse here, not better: a step has no path
+#   filter of its own, so a documentation-only pull request would pay for a full cluster
+#   bring-up to learn nothing. A separate, path-filtered workflow is the only shape that is
+#   neither permanent noise nor a permanent tax. It is simply absent from the check list when
+#   the bring-up surface is untouched, and it runs -- and can go red -- in exactly the pull
+#   request that broke it. ADR-017 records the decision and the rejected alternatives.
+#
+# DO NOT MAKE THIS A REQUIRED STATUS CHECK IN BRANCH PROTECTION
+#   This is an operational warning, not a preference. A required check that belongs to a
+#   path-filtered workflow is reported as permanently pending on every pull request the filter
+#   does not match, and a pending required check blocks the merge. Making this required would
+#   therefore block every documentation change in the repository, and the failure would look
+#   like a stuck queue rather than a misconfiguration. ci.yml's four jobs are the required set;
+#   this workflow is evidence, gathered where it is cheap to gather.
+#
+# WHY THE TOOLCHAIN IS INSTALLED FROM infra/versions.env RATHER THAN FROM LITERAL PINS
+#   That is the claim under test. ADR-011 keeps CI *tool* pins -- ruff, pytest -- as literals
+#   in ci.yml, because a lint tool and a test runner are not part of the evaluated artefact and
+#   must stay upgradable without touching a pin frozen at v1.0 or invalidating the
+#   versions_env_sha256 digest every sealed bundle carries. kind, kubectl, helm, kustomize and
+#   the cilium CLI are part of the evaluated artefact: NFR1 asserts the environment reproduces
+#   from a clean machine, and a run that installed literals would prove only that *some*
+#   toolchain works. scripts/install_cluster_tools.sh is the shared implementation, so this
+#   workflow and a developer following docs/04-repo-conventions.md section 2 install the same
+#   versions by the same code path.
+#
+# WHY THE CLUSTER-DEPENDENT CHECKS LIVE HERE AND NOWHERE ELSE
+#   ci.yml's per-component pytest step runs on a runner with no cluster, so everything under
+#   infra/tests/ is a pure unit test over fixtures. The checks that genuinely need a cluster --
+#   the NetworkPolicy enforcement proof, `make status` over the declared component set, and a
+#   smoke drive of the SLO probe and the resource collector -- have exactly one place they can
+#   run, and this is it.
+#
+# ACTIONS POLICY
+#   actions/checkout is the only action used, matching ci.yml: everything else is preinstalled
+#   on ubuntu-latest or installed by the repository's own script, so no third-party code runs
+#   with the repository token. Artifacts are deliberately not uploaded; the run log is what
+#   docs/05-traceability-matrix.md names as T-16's evidence, and adding an upload action would
+#   widen the trusted set for no gain.
+
+name: Environment bring-up
+
+on:
+  # Runs exactly when the bring-up surface changes, and is absent from the check list
+  # otherwise. Keep this list in step with what `make up` actually reads.
+  pull_request:
+    paths:
+      - 'infra/**'
+      - 'monitor/**'
+      - 'scripts/**'
+      - 'Makefile'
+      - '.github/workflows/env-bringup.yml'
+  # On-demand proof from any branch. This is how the first T-16 evidence run is produced,
+  # before the branch has a pull request.
+  workflow_dispatch:
+  # Weekly, deliberately off the hour, on the default branch only. Scheduled workflows across
+  # GitHub queue heavily at :00, and a run that starts late is indistinguishable in a log from
+  # one that ran slowly. What this catches is upstream rot that no commit of ours causes: a
+  # yanked chart version, a digest that stops resolving, a release asset withdrawn.
+  schedule:
+    - cron: '41 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: env-bringup-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bringup:
+    runs-on: ubuntu-latest
+    # A cold bring-up pulls eleven Boutique images, the Cilium chart and three observability
+    # charts. The ceiling is generous rather than tight on purpose: a timeout that fires
+    # during an image pull reports a red check for a slow network, which is the one failure
+    # mode this workflow must not manufacture.
+    timeout-minutes: 60
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Report the starting state of the runner
+        # Recorded because "clean machine" is the claim, and a log that does not show the
+        # starting state cannot support it. Also surfaces free disk before the image pulls,
+        # which is the resource a kind cluster on a hosted runner exhausts first.
+        run: |
+          echo "--- versions.env digest (the stack identity every run bundle records) ---"
+          python3 scripts/versions_env_sha256.py infra/versions.env
+          echo "--- preinstalled cluster tooling, before install ---"
+          for t in docker kind kubectl helm kustomize cilium; do
+            printf '%-10s ' "$t"
+            command -v "$t" || echo "absent"
+          done
+          echo "--- cpu / memory / disk (the resources a kind cluster on a hosted runner exhausts) ---"
+          # V21: the private-repository runner's actual envelope is what a cold bring-up has to fit, and
+          # the documented 4 vCPU / 16 GB figures are for PUBLIC repositories (Appendix A). Log what this
+          # runner really has so a bring-up failure can be read against its resources rather than guessed.
+          nproc
+          free -h
+          df -h /
+
+      - name: Install the cluster toolchain from infra/versions.env
+        run: sh scripts/install_cluster_tools.sh
+
+      - name: Preflight
+        # Runs on its own before `make up` so that a host problem is reported as a host
+        # problem, in its own named step, rather than as a bring-up failure fifty lines into
+        # another step's log.
+        run: sh scripts/preflight.sh
+
+      - name: Render M2 Monitor manifests
+        # Build-controlled proof only: rendering validates chart/manifests and pin wiring. Runtime
+        # delivery, modern-eBPF loading and captured fixtures are separate live-cluster evidence.
+        run: sh scripts/monitor_render.sh
+
+      - name: make up
+        # V21: a cold bring-up on a hosted runner pulls eleven Boutique images and stalls the 600s
+        # per-layer readiness wait, so UP_WAIT_TIMEOUT is raised for CI (up.sh reads it; the default
+        # stays 600 for a developer machine). BOUTIQUE_OVERLAY selects the CI-only resource-request
+        # overlay infra/boutique-overlays/ci-bringup -- REQUESTS only, never replicas, never used by a
+        # campaign -- so the workloads fit the runner's envelope. The envelope is what made every
+        # scheduled run since 2026-08-31 fail at layer 4 with five Deployments at 0/N: a two-node
+        # kind cluster has ONE schedulable node (kind taints the control-plane), a private-repo
+        # `ubuntu-latest` is a 2-vCPU runner, and the base's 2770m of CPU requests cannot fit that
+        # node's ~1.9 CPU allocatable -- so the pods were Pending with "1 Insufficient cpu", which no
+        # timeout raise can fix. The overlay is a SIBLING of infra/boutique, not a child, because
+        # Kustomize refuses a child whose `resources` reaches an ancestor directory ("cycle detected").
+        env:
+          UP_WAIT_TIMEOUT: '1200'
+          BOUTIQUE_OVERLAY: infra/boutique-overlays/ci-bringup
+          # UP_PROFILE=substrate: this workflow proves the SUBSTRATE -- kind, Cilium, Boutique,
+          # Locust, observability -- which is the whole of what its header claims and the whole of
+          # what traceability row T-16 names. It does NOT prove the Guardian, because the Guardian
+          # cannot come up here: scripts/guardian_deploy.sh refuses without `guardian-signing-key`,
+          # and ADR-114 forbids every repository path -- chart value, ExternalSecret, installer --
+          # from creating it, so a hosted runner has nothing to provision from. Rather than bend
+          # that rule to satisfy CI, the Guardian is declared `required_in: full` in
+          # infra/status/components.yaml and its layer is skipped under this profile, honestly, with
+          # a `progress` line naming the skip. The Guardian stays proven on the VM and in P0-live.
+          # ADR-148 records the decision. THE THREE PROFILE-SENSITIVE STEPS BELOW ARE ONE PROFILE:
+          # `make up`, `make status`, and `make down then make up again` must set the same
+          # UP_PROFILE or `status` reports a component `up` that this profile never brought up.
+          UP_PROFILE: substrate
+        run: make up
+
+      - name: Diagnose a failed bring-up
+        # Runs only when an earlier step failed. `up` waits on readiness and reports WHICH
+        # Deployments are short; it does not report WHY, and four consecutive scheduled runs
+        # (2026-08-31 .. 2026-09-21) and the 2026-09-28 dispatch all failed with the same six
+        # Deployments at 0/N after the full wait -- a signature that a timeout raise cannot fix and
+        # that a log without pod state cannot explain. This step is the difference between a guess
+        # (slow image pulls) and a diagnosis (which of: unschedulable, ImagePullBackOff, probe
+        # failure, or node pressure). It reads only; it never changes the cluster, so it cannot mask
+        # the failure it is describing.
+        if: failure()
+        run: |
+          set -u
+          echo "--- nodes ---"
+          kubectl get nodes -o wide || true
+          echo "--- boutique deployments ---"
+          kubectl -n boutique get deployments || true
+          echo "--- boutique pods (wide) ---"
+          kubectl -n boutique get pods -o wide || true
+          echo "--- boutique pod status: phase, waiting reason, last state ---"
+          kubectl -n boutique get pods -o json \
+            | python3 -c '
+          import json
+          import sys
+
+          pods = json.load(sys.stdin)["items"]
+          for pod in sorted(pods, key=lambda p: p["metadata"]["name"]):
+              name = pod["metadata"]["name"]
+              phase = pod["status"].get("phase")
+              node = pod["spec"].get("nodeName")
+              print("%s  phase=%s  node=%s" % (name, phase, node))
+              for cs in pod["status"].get("containerStatuses") or []:
+                  state = cs.get("state", {})
+                  waiting = state.get("waiting", {})
+                  term = state.get("terminated", {})
+                  last = cs.get("lastState", {}).get("terminated", {})
+                  detail = waiting.get("reason") or term.get("reason") or ""
+                  msg = waiting.get("message") or term.get("message") or ""
+                  print("    %s: ready=%s restarts=%s state=%s %s"
+                        % (cs["name"], cs.get("ready"), cs.get("restartCount"), detail, msg))
+                  if last:
+                      print("      last-terminated: %s exit=%s %s"
+                            % (last.get("reason"), last.get("exitCode"), last.get("message", "")))
+          ' || true
+          echo "--- boutique events (oldest first) ---"
+          kubectl -n boutique get events --sort-by=.metadata.creationTimestamp || true
+          echo "--- node allocated resources (pressure vs. capacity) ---"
+          kubectl describe nodes \
+            | grep -E "^(Name:|  MemoryPressure|  DiskPressure|  PIDPressure|  Allocated resources:|  [a-z0-9].* +[0-9]+m? +[0-9]+%|  [a-z0-9].*Requests +Limits)" \
+            || true
+          echo "--- cluster-wide pods not Running/Succeeded ---"
+          kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded || true
+          echo "--- runner disk after the failed bring-up ---"
+          df -h / || true
+
+      - name: make status
+        # Same profile as the `make up` above: status asserts over the components THIS profile was
+        # asked to bring up. Under `full` it would demand the Guardian and fail on a substrate it
+        # was never asked to build.
+        env:
+          UP_PROFILE: substrate
+        run: make status
+
+      - name: NetworkPolicy enforcement proof
+        # M1's Definition-of-done line "NetworkPolicy enforcement demonstrated (a denied test
+        # connection)", which supports traceability row T-11. Needs a cluster, so this is the
+        # only workflow it can run in. The proof asserts the failure *mode* and attributes the
+        # drop to Cilium's policy engine; see ADR-014 for why a merely-failing connection
+        # proves nothing.
+        run: sh scripts/netpol_proof.sh
+
+      - name: Guardian Tier-B flag isolation
+        # V22 / M10 WS-7: assertion 8 of guardian/tests/test_flag_isolation.py needs a running kind
+        # cluster with Cilium and was an unconditional skip until M10. Its cluster-availability probe now
+        # runs it here, where a cluster is up, so the Tier-B half of the flag-isolation proof (ADR-023)
+        # is exercised at least in env-bringup and P0-live. A venv keeps the install off the runner's
+        # externally-managed system interpreter (PEP 668, which scripts/install_runtime_deps.sh refuses),
+        # so no new action is introduced and the ACTIONS POLICY above still holds (only checkout is used).
+        # The assertion server-side dry-runs guardian/deploy/rbac.yaml, which carries a namespaced Role,
+        # so it needs the `guardian` namespace to exist. Under this workflow's substrate profile the
+        # Guardian layer is skipped (ADR-148) and the namespace with it, so the test now creates the
+        # namespace itself and deletes it again when it was the one that created it -- a bare Namespace
+        # is not a credential (ADR-114 forbids the KEY, not the namespace), so nothing is bent to keep
+        # the Tier-B half running here.
+        run: |
+          set -eu
+          python3 -m venv .isolation-venv
+          .isolation-venv/bin/python -m pip install --quiet --upgrade pip
+          .isolation-venv/bin/python -m pip install --quiet pytest==8.4.2
+          PYTHON=.isolation-venv/bin/python sh scripts/install_runtime_deps.sh guardian
+          .isolation-venv/bin/python -m pytest -q \
+            guardian/tests/test_flag_isolation.py::test_isolation_8_g2_changes_only_the_environment
+          rm -rf .isolation-venv
+
+      - name: Instrument smoke -- SLO probe and resource collector
+        # Not a measurement run: it proves the two writers produce their
+        # docs/protocols/data-management.md section 1 schemas against a real cluster, which is
+        # the half of the M1 Definition-of-done that unit tests over fixtures cannot reach.
+        # So the probe's exit code is a VERDICT, not the assertion -- the assertion is the
+        # schema check on probes.csv below. The probe is given a timeline long enough to reach a
+        # verdict at all: evaluation-protocol section 4 is now calibrated, with
+        # stabilization_window_seconds 35 at a 5s probe interval, and the previous `--samples 5`
+        # is 25s, which made the probe exit 2 with "timeline holds no sample after the 35s
+        # stabilization window" on every run -- a fact about the window, not about the writer.
+        # The SLO's own gate is scripts/readiness_gate.sh with pilot/campaign semantics.
+        run: |
+          set -eu
+          out=$(mktemp -d)
+          frontend_log="$out/frontend-port-forward.log"
+          prometheus_log="$out/prometheus-port-forward.log"
+          locust_log="$out/locust-port-forward.log"
+
+          kubectl -n boutique port-forward svc/frontend 8080:80 >"$frontend_log" 2>&1 &
+          frontend_pf=$!
+          kubectl -n observability port-forward svc/prometheus-server 9090:80 >"$prometheus_log" 2>&1 &
+          prometheus_pf=$!
+          kubectl -n locust port-forward svc/locust 8089:8089 >"$locust_log" 2>&1 &
+          locust_pf=$!
+          cleanup() {
+            kill "$frontend_pf" "$prometheus_pf" "$locust_pf" 2>/dev/null || true
+            wait "$frontend_pf" "$prometheus_pf" "$locust_pf" 2>/dev/null || true
+          }
+          trap cleanup EXIT HUP INT TERM
+
+          wait_for_forward() {
+            name=$1
+            pid=$2
+            url=$3
+            log=$4
+            attempt=0
+            while [ "$attempt" -lt 30 ]; do
+              if ! kill -0 "$pid" 2>/dev/null; then
+                echo "$name port-forward exited before becoming ready" >&2
+                cat "$log" >&2
+                return 1
+              fi
+              if curl --fail --silent --show-error --max-time 2 "$url" >/dev/null; then
+                return 0
+              fi
+              attempt=$((attempt + 1))
+              sleep 1
+            done
+            echo "$name port-forward did not become ready" >&2
+            cat "$log" >&2
+            return 1
+          }
+          wait_for_forward frontend "$frontend_pf" http://127.0.0.1:8080/ "$frontend_log"
+          wait_for_forward prometheus "$prometheus_pf" http://127.0.0.1:9090/-/ready "$prometheus_log"
+          wait_for_forward locust "$locust_pf" http://127.0.0.1:8089/ "$locust_log"
+
+          # A smoke window belongs to this workflow invocation, not to a profile or driver default.
+          # Drive every registry entry; each must export a schema-valid, non-empty request CSV.
+          for profile in $(python3 -m infra.locust.driver list); do
+            python3 -m infra.locust.driver drive --profile "$profile" --duration 5 \
+              --out "$out/${profile}-locust_stats.csv"
+          done
+
+          # The probe's exit code is a VERDICT, not the assertion: 0 = SLO met, 2 = SLO breached.
+          # evaluation-protocol section 4 is calibrated (cf. the step comment above), so there are
+          # no pending thresholds and exit 3 does not apply. The previous `--samples 5` (25s) could
+          # not clear the 35s stabilization window and exited 2 with "timeline holds no sample
+          # after the stabilization window" on every run -- a fact about the window, not the writer.
+          # We now run a 90s timeline and accept either verdict, because the real assertion is the
+          # schema check on probes.csv below, which proves the writer against a real cluster. Only a
+          # usage error (exit 1) is a hard failure.
+          set +e
+          python3 -m infra.probes.slo_probe \
+            --base-url http://127.0.0.1:8080 --profile LOAD-LIGHT --duration 90 \
+            --out "$out/probes.csv"
+          probe_rc=$?
+          set -e
+          case "$probe_rc" in
+            0) echo "slo_probe: SLO MET over the 90s timeline -- validating its CSV below" ;;
+            2) echo "slo_probe: SLO BREACHED -- the verdict is not the assertion here; validating its CSV below" ;;
+            *) echo "slo_probe failed with unexpected exit $probe_rc" >&2; exit "$probe_rc" ;;
+          esac
+
+          python3 -m infra.collectors.resource_collector \
+            --prometheus-url http://127.0.0.1:9090 --samples 1 \
+            --out "$out/resources.csv"
+
+          # Validate exact schemas and at least one data row; head alone can display an empty or
+          # header-only file while leaving the smoke step green.
+          python3 - "$out/probes.csv" "$out/resources.csv" <<'PY'
+          import csv
+          import sys
+          from pathlib import Path
+
+          expected = {
+              "probes.csv": [
+                  "ts", "probe_id", "target", "method", "status_code", "latency_ms", "ok", "error"
+              ],
+              "resources.csv": [
+                  "ts", "series", "namespace", "workload", "container", "cpu_cores",
+                  "mem_bytes", "storage_bytes", "restarts_total"
+              ],
+          }
+          for raw in sys.argv[1:]:
+              path = Path(raw)
+              with path.open(newline="", encoding="utf-8") as handle:
+                  rows = list(csv.DictReader(handle))
+                  header = handle.seek(0) or next(csv.reader(handle), None)
+              if header != expected[path.name]:
+                  raise SystemExit(f"{path.name}: unexpected or absent CSV header")
+              if not rows:
+                  raise SystemExit(f"{path.name}: no data rows written")
+              if path.name == "probes.csv":
+                  for row in rows:
+                      if row["ok"] != "true" or not row["status_code"] or row["error"]:
+                          raise SystemExit("probes.csv: smoke request did not return a successful HTTP result")
+                      int(row["status_code"])
+                      float(row["latency_ms"])
+              else:
+                  for row in rows:
+                      if row["series"] not in {"app", "framework", "platform"}:
+                          raise SystemExit(f"resources.csv: invalid series {row['series']!r}")
+                      for field in ("cpu_cores", "mem_bytes", "storage_bytes"):
+                          if float(row[field]) < 0:
+                              raise SystemExit(f"resources.csv: negative {field}")
+                      if int(row["restarts_total"]) < 0:
+                          raise SystemExit("resources.csv: negative restarts_total")
+              print(f"{path.name}: schema and rows valid, {len(rows)} data row(s)")
+          PY
+
+          echo "--- probes.csv ---"
+          head -3 "$out/probes.csv"
+          echo "--- resources.csv ---"
+          head -3 "$out/resources.csv"
+          echo "--- Locust exports (validated by the driver) ---"
+          for stats in "$out"/*-locust_stats.csv; do
+            echo "--- $stats ---"
+            head -3 "$stats"
+          done
+
+      - name: make down then make up again
+        # `down` and `up` are only meaningfully distinct if the round trip converges, and the
+        # cheapest place to find out that it does not is here rather than mid-campaign.
+        # UP_PROFILE=substrate, matching the first bring-up: `down` is profile-agnostic (it tears
+        # down whatever is present), but the `up`/`status` pair must use the profile this workflow
+        # proves, or the round trip would build the substrate and then assert a Guardian it skipped.
+        env:
+          UP_WAIT_TIMEOUT: '1200'
+          BOUTIQUE_OVERLAY: infra/boutique-overlays/ci-bringup
+          UP_PROFILE: substrate
+        run: |
+          make down
+          make up
+          make status
+
+      - name: make nuke
+        # Always, so a failed run still exercises teardown and still leaves the log showing
+        # what teardown did. FORCE=1 because scripts/nuke.sh refuses to destroy an environment
+        # non-interactively without being told to.
+        if: always()
+        run: FORCE=1 make nuke

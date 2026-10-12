@@ -1,0 +1,156 @@
+# reduce-cpu-requests.yaml -- one strategic-merge document per Online Boutique Deployment, each
+# lowering that Deployment's container CPU request to 10m and leaving every other field alone.
+#
+# The eleven documents are the ten Deployments in upstream's kustomize/base at v0.10.6 plus
+# redis-cart, which upstream defines in cartservice.yaml. Only `resources.requests.cpu` appears, so
+# a strategic merge replaces that one value: `limits`, `requests.memory`, env, probes, ports and
+# image digests all come through from the base untouched. Container names are upstream's; every
+# Deployment runs a single container named `server` except redis-cart, whose container is `redis`.
+#
+# The base's requests are, per container: adservice 200m/180Mi, cartservice 200m/64Mi, redis
+# 70m/200Mi, and 100m/64Mi for each of the other eight, except recommendationservice at
+# 100m/220Mi. Across the replica counts infra/boutique/kustomization.yaml sets that is 2770m of CPU
+# -- more than a 2-vCPU hosted runner's single schedulable node has allocatable, which is why the
+# pods were Pending rather than slow. See kustomization.yaml's header for the measurement.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adservice
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          resources:
+            requests:
+              cpu: 10m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cartservice
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          resources:
+            requests:
+              cpu: 10m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-cart
+spec:
+  template:
+    spec:
+      containers:
+        - name: redis
+          resources:
+            requests:
+              cpu: 10m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkoutservice
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          resources:
+            requests:
+              cpu: 10m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: currencyservice
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          resources:
+            requests:
+              cpu: 10m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emailservice
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          resources:
+            requests:
+              cpu: 10m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          resources:
+            requests:
+              cpu: 10m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paymentservice
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          resources:
+            requests:
+              cpu: 10m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: productcatalogservice
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          resources:
+            requests:
+              cpu: 10m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommendationservice
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          resources:
+            requests:
+              cpu: 10m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shippingservice
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          resources:
+            requests:
+              cpu: 10m

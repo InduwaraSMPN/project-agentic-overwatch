@@ -1,0 +1,18 @@
+# Templated from guardian/deploy/deployment.yaml's Service object.
+apiVersion: v1
+kind: Service
+metadata:
+  name: guardian
+  namespace: {{ .Values.namespaces.guardian }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/name: guardian
+    app.kubernetes.io/component: guardian
+spec:
+  selector:
+    app.kubernetes.io/name: guardian
+  ports:
+    - name: http
+      port: {{ .Values.guardian.service.port }}
+      targetPort: http
+      protocol: TCP

@@ -1,0 +1,262 @@
+# infra/observability/prometheus-values.yaml -- Helm values for the Prometheus server that
+# supplies every resource series this project measures.
+#
+# WHERE THE KEY NAMES COME FROM
+#   Chart: prometheus-community/prometheus, installed by infra/observability/install.sh at the
+#   version held by PROMETHEUS_CHART_VERSION in infra/versions.env. Every key below was read out
+#   of the chart's own values.yaml at chart version 29.27.0 (app version v3.14.0), source
+#   https://github.com/prometheus-community/helm-charts/blob/prometheus-29.27.0/charts/prometheus/values.yaml
+#   -- names, nesting and upstream defaults are quoted from that file rather than remembered. A
+#   values key the chart does not define is silently ignored by Helm, so an invented key is not an
+#   error, it is a setting that never takes effect; that is why the check is done against the file
+#   and why the version it was checked against is written down here. When PROMETHEUS_CHART_VERSION
+#   moves, re-read that file before assuming a key survived the bump.
+#
+# WHY THIS CHART AND NOT kube-prometheus-stack
+#   infra/versions.env carries three separate observability pins -- PROMETHEUS_CHART_VERSION,
+#   KUBE_STATE_METRICS_VERSION and GRAFANA_VERSION -- and rule 2 of that file's header makes the
+#   key set an M0 interface contract that later milestones may rely on. An umbrella chart yields
+#   one pin, which cannot honestly populate three keys: two of them would have to hold either a
+#   copy of the umbrella version or whichever subchart version the umbrella happens to resolve
+#   today, and neither is a thing a reader can install. The umbrella also brings the Prometheus
+#   Operator and its CRDs, roughly a gigabyte of image and API surface, into a lab cluster that
+#   shares a 10 GB WSL2 utility VM with kind, Cilium, eleven Online Boutique services and Locust.
+#   Three separately pinned charts cost three release names and buy three honest pins.
+#
+# WHAT THIS FILE IS RESPONSIBLE FOR
+#   Two metric families have to exist, labelled by namespace, for the M1 collectors to work:
+#
+#     container_cpu_usage_seconds_total        -- from cAdvisor, embedded in the kubelet
+#     kube_pod_container_status_restarts_total -- from the standalone kube-state-metrics release
+#
+#   The second is the source for the container-restart column that docs/protocols/
+#   data-management.md section 3 requires in resources.csv, so it is a bundle-sealing dependency
+#   rather than a convenience. Both are reached through scrape jobs the chart already ships
+#   enabled, which is why this file adds no scrape_configs of its own; the paragraph over
+#   scrapeConfigs below records which jobs those are and how each metric arrives correctly
+#   labelled.
+#
+# MEMORY INTENT
+#   The whole observability namespace is budgeted at roughly 2.1 GiB of memory limit on a node
+#   that also carries the target application: Prometheus 1536Mi, its config-reload sidecar 64Mi,
+#   node-exporter as shipped, kube-state-metrics 192Mi and Grafana 256Mi. Requests sit far below
+#   the limits because the instrument idles between runs and only needs headroom during one.
+#   Memory limits are set on every component so a runaway instrument is killed instead of evicting
+#   Boutique pods and silently corrupting the run it was supposed to be measuring. CPU limits are
+#   deliberately absent -- see the resources block for why.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Disabling the cAdvisor or service-endpoint scrape jobs, or turning off the kube-state-metrics
+#   release, removes columns from resources.csv and stops run bundles sealing. Lowering retention
+#   below the length of a campaign leg makes a re-query of the run window return nothing. Enabling
+#   persistence puts the instrument's data in a PersistentVolume that `make nuke` must then
+#   remember to remove.
+
+# --- Subcharts: exactly one stays on -----------------------------------------------------------
+# The prometheus chart declares four optional dependencies in its Chart.yaml, each gated on an
+# <name>.enabled value, so setting these is the supported way to opt out. None of them is removed
+# by deleting a key; the key has to be present and false.
+
+alertmanager:
+  # Upstream default is `enabled: true` (values.yaml L1182). Alerting is M2's subject, and
+  # ALERTMANAGER_VERSION in infra/versions.env stays empty until the milestone that decides what
+  # goes in it. Installing an Alertmanager now would put a running component in the cluster with
+  # no pin behind it, which is precisely the state rule 2 of that file's header exists to prevent.
+  enabled: false
+
+kube-state-metrics:
+  # Upstream default is `enabled: true` (values.yaml L1225). Disabled here because KSM is
+  # installed as its own release from prometheus-community/kube-state-metrics, pinned separately
+  # by KUBE_STATE_METRICS_VERSION. Leaving the subchart on would install KSM twice: two
+  # Deployments emitting identical series, two scrape targets, and doubled restart counts in
+  # resources.csv. Its values live in infra/observability/kube-state-metrics-values.yaml.
+  enabled: false
+
+prometheus-node-exporter:
+  # Upstream default is `enabled: true` (values.yaml L1233), restated rather than left implicit
+  # because it is load-bearing and because it is the one component here with no infra/versions.env
+  # key of its own. It has no key on purpose: it ships inside the pinned prometheus chart, so
+  # PROMETHEUS_CHART_VERSION already determines it exactly, and a second key would be a value that
+  # could disagree with the chart that actually installs it. This mirrors the treatment
+  # infra/versions.env already documents for the Kubernetes audit stream, which is an apiserver
+  # feature rather than a separately versioned component. Node-level CPU and memory are the
+  # denominator for the platform series in resources.csv, so this must stay on.
+  enabled: true
+
+prometheus-pushgateway:
+  # Upstream default is `enabled: true` (values.yaml L1247). Nothing in this project pushes
+  # metrics: every producer is scraped. An idle pushgateway is a Deployment, a Service and an
+  # image pull that measure nothing, on a node where that memory is contested.
+  enabled: false
+
+# --- Server ------------------------------------------------------------------------------------
+
+server:
+  global:
+    # NOT AN EXPERIMENT PARAMETER. This is an instrument setting -- the sampling rate of the
+    # measuring device -- and the boundary it sits on is the one drawn by rule 4 of the
+    # infra/versions.env header: seeds, run counts, token lifetimes, budgets and thresholds are
+    # owned by docs/protocols/evaluation-protocol.md and docs/protocols/security-policy.md and
+    # must never be restated under infra/. A scrape interval decides nothing about the
+    # experiment's design; it decides how finely the instrument resolves whatever the experiment
+    # does. The numbers that ARE experiment parameters -- including the probe interval that
+    # data-management section 4's gap rule depends on -- stay in the protocol files, and nothing
+    # here reads or duplicates them.
+    #
+    # 15s rather than the chart's 1m (values.yaml L275, L281) because a phase of an incident
+    # response can be shorter than a minute, and a resource series sampled once a minute cannot
+    # show a CPU excursion inside one. The timeout stays at the chart's 10s (L278), comfortably
+    # below the interval, as Prometheus requires.
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    evaluation_interval: 15s
+
+  persistentVolume:
+    # Upstream default is `enabled: true` (values.yaml L534), which on kind binds to the
+    # local-path provisioner and leaves a PersistentVolume behind that `make down` does not touch.
+    # emptyDir instead: the instrument's TSDB is derived data, every run's numbers are copied into
+    # its own bundle under runs/ while the run is live, and analysis reads bundles only
+    # (.agents/rules/20-parity-and-determinism.md). Making the TSDB durable would create a second
+    # copy of measurement data with no owner in docs/protocols/data-management.md, and would give
+    # `make nuke` one more thing to remember.
+    enabled: false
+
+  # Retention is storage sizing for the instrument, not an experiment parameter, for the same
+  # reason the scrape interval is not: nothing in the analysis path reads Prometheus after a run,
+  # because the bundle is written while the run is live. What retention has to cover is the gap
+  # between a sample being recorded and the collector reading it, plus enough slack that a
+  # mid-campaign investigation can still look back at earlier legs. Three days covers a campaign
+  # leg with room to spare.
+  #
+  # The size cap is a safety net rather than the intent. At a 15s interval over a one-node kind
+  # cluster carrying Boutique, Cilium, Falco and this namespace, the sample rate is on the order
+  # of a thousand samples per second, and Prometheus stores roughly two bytes per compressed
+  # sample: about 200 MB a day, so about 600 MB across the three-day window. 2GB is generous
+  # headroom, and it exists because an unbounded emptyDir on the kind node's writable layer can
+  # fill the node's disk, and a full node evicts Boutique pods -- which corrupts the run this
+  # instrument was measuring rather than merely losing metrics. Chart defaults are "15d" and ""
+  # (values.yaml L802, L806).
+  retention: "3d"
+  retentionSize: "2GB"
+
+  # Upstream default is `resources: {}` (values.yaml L698): no requests, so the scheduler reserves
+  # nothing for the instrument, and no limits, so the kubelet bounds nothing.
+  #
+  # There is deliberately a CPU request and no CPU limit. A CPU limit is enforced by CFS
+  # throttling, and a throttled Prometheus does not fail loudly -- it finishes scrapes late, which
+  # surfaces as gaps in exactly the series that data-management section 4's "gaps larger than the
+  # probe interval times three" validity rule inspects. The instrument would then invalidate runs
+  # by being throttled rather than by anything the run did. Memory is bounded because memory
+  # exhaustion is not self-correcting: an unbounded Prometheus grows until the node evicts
+  # something, and the kubelet, not this project, picks what.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 1536Mi
+
+  # Standalone Alertmanager release installed by infra/monitor/install.sh. The
+  # chart's alertmanager subchart stays disabled above; server.alertmanagers is
+  # the chart-defined escape hatch rendered into prometheus.yml.
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager.observability.svc.cluster.local:9093
+
+# Representative anomaly rules. Every alert carries exactly one of the three
+# severities accepted by monitor/aggregator/sources/prometheus.py and the
+# provisional origin required by ADR-018. Thresholds here are operational alert
+# predicates, not evaluation caps or measurement budgets.
+serverFiles:
+  alerting_rules.yml:
+    groups:
+      - name: overwatch-kubernetes
+        rules:
+          - alert: KubeDeploymentReplicasMismatch
+            expr: kube_deployment_status_replicas_available < kube_deployment_spec_replicas
+            labels:
+              severity: critical
+              origin: engineering
+            annotations:
+              summary: A Kubernetes Deployment has fewer available replicas than specified.
+          - alert: KubePodCrashLooping
+            expr: increase(kube_pod_container_status_restarts_total[10m]) > 0
+            labels:
+              severity: warning
+              origin: engineering
+            annotations:
+              summary: A Kubernetes Pod restarted during the observation window.
+          - alert: NodeFilesystemAlmostOutOfSpace
+            expr: node_filesystem_avail_bytes / node_filesystem_size_bytes < 0.05
+            labels:
+              severity: info
+              origin: engineering
+            annotations:
+              summary: A node filesystem has less than five percent free space.
+          - alert: CartServiceErrorRateHigh
+            expr: sum(rate(grpc_server_handled_total{grpc_service=~".*CartService",grpc_code!="OK"}[5m])) / clamp_min(sum(rate(grpc_server_handled_total{grpc_service=~".*CartService"}[5m])), 1) > 0.05
+            labels:
+              severity: critical
+              origin: engineering
+              namespace: boutique
+              service: cartservice
+            annotations:
+              summary: cartservice is returning errors for more than five percent of requests.
+
+configmapReload:
+  prometheus:
+    # The sidecar that reloads Prometheus when its ConfigMap changes. Upstream default is
+    # `resources: {}` (values.yaml L124, under configmapReload.prometheus at L47). It is a
+    # watch loop over one ConfigMap, so the bound can be small; it is set at all so the sidecar
+    # cannot be the unbounded container on a node under memory pressure.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 24Mi
+      limits:
+        memory: 64Mi
+
+# --- Scrape jobs -------------------------------------------------------------------------------
+# The chart ships scrapeConfigs as a map of named jobs, each independently switchable through an
+# `enabled` key (values.yaml L812 and the comment directly above it; templates/cm.yaml lines 56-64
+# default a missing `enabled` to true and strip the key before rendering). Two shipped jobs are
+# turned off below. Nothing is added, because both metric families this project needs already
+# arrive through jobs that are enabled upstream:
+#
+#   container_cpu_usage_seconds_total
+#     Job `kubernetes-nodes-cadvisor` (values.yaml L848), enabled upstream, discovers nodes and
+#     scrapes /metrics/cadvisor on the kubelet. cAdvisor puts namespace, pod and container on the
+#     metric itself, so a query for namespace="boutique" works with no relabelling of ours.
+#
+#   kube_pod_container_status_restarts_total
+#     Job `kubernetes-service-endpoints` (values.yaml L864), enabled upstream, discovers
+#     endpointslices and keeps only targets whose SERVICE carries the annotation
+#     prometheus.io/scrape: "true". The standalone kube-state-metrics chart puts exactly that
+#     annotation on its Service whenever prometheusScrape is true -- its default, which
+#     kube-state-metrics-values.yaml restates explicitly for this reason (kube-state-metrics 8.4.0
+#     values.yaml L2, rendered by that chart's templates/service.yaml lines 9-10). So the
+#     standalone release is discovered with no extraScrapeConfigs entry and no annotation added by
+#     us, and adding either would produce a second, duplicate target for the same endpoint.
+#
+#     The label detail that makes this correct: that job sets honor_labels: true, so when KSM
+#     reports kube_pod_container_status_restarts_total{namespace="boutique",...} the metric's own
+#     namespace label wins over the target's, which would otherwise be "observability", the
+#     namespace KSM itself runs in. Without honor_labels every KSM series would be attributed to
+#     the monitoring namespace and no query for namespace="boutique" would match. It is the
+#     chart's default for that job rather than something set here, but it is the reason this
+#     arrangement works, and it was read rather than assumed.
+scrapeConfigs:
+  prometheus-pushgateway:
+    # Selects Services annotated prometheus.io/probe: pushgateway (values.yaml L947). The
+    # pushgateway subchart is off above, so this job can never match anything; left on, it would
+    # put a job in the rendered prometheus.yml describing a component this install does not have.
+    enabled: false
+  kubernetes-services:
+    # Blackbox probing: it rewrites every target's address to the literal host `blackbox`
+    # (values.yaml L957). No blackbox exporter is deployed here and none is planned -- endpoint
+    # liveness is measured by the SLO probe under infra/probes/, which lands in T1.4 and writes
+    # probes.csv. Left enabled, any Service annotated prometheus.io/probe: true would become a
+    # permanently failing target, and a permanently red target teaches an operator to ignore red
+    # targets.
+    enabled: false

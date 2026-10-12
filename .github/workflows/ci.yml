@@ -1,0 +1,448 @@
+# CI for the agentic-overwatch kit. The check contract is docs/04-repo-conventions.md
+# section 4; the milestone-level rationale is docs/plans/M0-implementation-plan.md,
+# "T0.5 - CI".
+#
+# Shape decisions, so nobody has to reverse-engineer them from the YAML:
+# - Exactly four named jobs (lint, slots, guardrail-grep, hygiene), so the pull-request
+#   check list names the failure instead of burying it inside one mega-job.
+# - Only first-party GitHub actions are used: checkout and setup-python. setup-python supplies
+#   an isolated hosted-toolcache interpreter so pip never targets Ubuntu's PEP 668-managed
+#   system Python; package versions remain pinned in their existing single homes.
+# - Checks whose inputs do not exist yet -- the per-component unit tests (M1 onward), the M3
+#   opa suite, the M4 parity check and the M5 nightly determinism check -- are encoded now
+#   behind hashFiles() guards, so they self-activate the moment their inputs first exist:
+#   section 4's contract is written down once, with no future "turn it on" edit to forget.
+# - Jobs group by toolchain, not by check family. lint is the Python job: it is where a Python
+#   interpreter and pip-installed tools are needed, so the per-component pytest steps and the
+#   nightly determinism check live there rather than in jobs of their own. This keeps the
+#   pull-request check list at four entries and keeps Python set up in exactly one place, and
+#   each of those steps carries its subject in its own name so a failure is still named in the
+#   log even though the job around it is called lint.
+# - Everything gated off stays a step, never a job. A job whose `if` is false is still listed
+#   on the pull request as a skipped entry, so a fifth job would add permanent noise for the
+#   several milestones before it first runs -- which is the whole reason for the four-job
+#   shape. Step-level guards skip silently.
+# - Per-ref concurrency with cancel-in-progress: a rapid push stream to one branch cancels
+#   its own superseded runs instead of queueing redundant ones.
+
+name: CI
+
+# Triggers. pull_request and push:main are the per-change gates. workflow_dispatch exists so
+# that a check gone red for an environmental reason rather than a code one -- a transient runner
+# failure, a package index timeout -- can be re-run on demand, instead of having to manufacture
+# an event by pushing an empty commit; on a solo project there is no second contributor whose
+# push would do it incidentally. schedule drives the optional nightly determinism check that
+# 04-repo-conventions.md section 4 asks for; see the step of that name in the lint job. The cron
+# is deliberately off the hour, because scheduled workflows across GitHub queue heavily at :00
+# and a run that starts late is indistinguishable in a log from one that ran slowly. Scheduled
+# runs fire only on the default branch, which is the only branch a nightly result means anything
+# for.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '27 3 * * *'
+
+# Least privilege: nothing here writes to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+      - name: Read the single-homed Python pin
+        id: python-pin
+        shell: bash
+        run: |
+          set -eu
+          version=$(sed -n 's/^PYTHON_VERSION=//p' infra/versions.env)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Set up isolated Python
+        # The hosted image's system interpreter may be PEP 668 externally managed. setup-python's
+        # toolcache interpreter is isolated from apt, so both literal CI-tool pins and the runtime
+        # pins read by install_runtime_deps.sh install without --break-system-packages. The
+        # interpreter version is read from versions.env rather than duplicated in this workflow.
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ steps.python-pin.outputs.version }}
+          cache: pip
+      - name: Install the pinned ruff
+        # Pinned as a literal here rather than as an entry in infra/versions.env. ADR-011
+        # records that decision and its reasoning: a lint tool is not part of the evaluated
+        # artefact, so it has to stay upgradable without touching a pin frozen at v1.0 or
+        # invalidating the versions_env_sha256 digest carried by every sealed bundle. The
+        # literal also keeps local and CI findings identical, since ruff findings shift between
+        # versions, and bumping it is a deliberate edit that shows up in review.
+        run: python -m pip install ruff==0.16.0
+      - name: Lint and check formatting
+        # Delegates to the same script `make lint` runs, so the lint command has exactly one
+        # definition and a red check here reproduces locally with one command. Called
+        # directly rather than through make, as the slots, grep-guard and hygiene jobs call
+        # their scripts. Rule selection, line length and excludes all come from
+        # pyproject.toml -- one configuration home, nothing duplicated in the workflow.
+        run: sh scripts/lint.sh
+
+      # --- per-component unit tests (04-repo-conventions.md section 4) -------------------
+      # Section 1 places component tests inside each component, runnable standalone, so each
+      # step below invokes only its own component's tests. One step per component rather than
+      # one aggregate pytest run, for two reasons: the failing component is named in the check
+      # log instead of being buried in a combined summary, and each step activates on its own
+      # at the milestone that first creates its tests -- infra at M1, monitor at M2, guardian
+      # at M3, agents at M4, runner at M6. Every step is inert today; hashFiles() is '' for all
+      # five, so no pytest runs and none of them can make a pull request red.
+      # The five components are those section 1 draws a tests/ entry under -- infra, monitor,
+      # guardian, agents, runner. The step order follows the map's order. Adding a component
+      # means adding a step here.
+      # Python comes from setup-python above rather than the runner's system interpreter, which
+      # may enforce PEP 668 and correctly reject direct pip installs.
+      - name: Install the pinned pytest
+        # Guarded on the union of the five test directories, so nothing is installed while
+        # nothing is run. Pinned as a literal for the reason ADR-011 records for the ruff pin:
+        # a test runner is development tooling, not part of the evaluated artefact, so it does
+        # not belong in infra/versions.env. Revisit this pin when the first component's tests
+        # land, which is the first time it is exercised at all.
+        if: hashFiles('infra/tests/**', 'monitor/tests/**', 'guardian/tests/**', 'agents/tests/**', 'runner/tests/**', 'scenarios/tests/**', 'analysis/tests/**', 'scripts/tests/**') != ''
+        run: python -m pip install pytest==8.4.2
+      - name: Install the pinned runtime dependencies
+        # THE OTHER HALF OF THE PIN STORY, AND THE ONE THAT IS NOT A LITERAL.
+        # The step above installs pytest from a literal because ADR-011 holds that development
+        # tooling is not part of the evaluated artefact. This step is the opposite case and its
+        # versions therefore come from infra/versions.env, via the same script a developer runs:
+        # pydantic validates every EvidenceEvent the campaign produces, so it is software under
+        # study, and docs/protocols/data-management.md section 2 puts the versions.env digest into
+        # every sealed run bundle precisely so that a change to it is on the record. ADR-021, and
+        # ADR-017 before it for the cluster toolchain, draw the same line.
+        #
+        # THE GUARD IS WHY THIS STEP EXISTS AT ALL RATHER THAN LATER.
+        # `Unit tests -- monitor` below arms on hashFiles('monitor/tests/**'), and M1's infra tests
+        # need nothing beyond the standard library -- they parse Markdown -- so the gap between
+        # "a test step is armed" and "its imports are installed" is invisible until M2's first test
+        # file lands. Without this step that commit fails on `import pydantic`, which is the
+        # failure mode docs/plans/M0-implementation-plan.md records learning the hard way twice.
+        # The guard names the components that HAVE a runtime dependency, which at M3 was monitor
+        # and guardian; a later component adds its own path here in the commit that introduces its
+        # dependency. It is deliberately not the five-way union of the pytest steps above: infra/'s
+        # tests need nothing beyond the standard library, and arming an install for a component
+        # that needs none would make this step's guard stop meaning what it says.
+        #
+        # M4 ADDS agents/tests/**, WHICH IS THE PROCESS 04-repo-conventions.md SECTION 4.1 STATES
+        # RATHER THAN AN EXCEPTION TO IT. That section's "Runtime dependencies" bullet fixes the
+        # procedure: the milestone that introduces a component's first runtime dependency adds the
+        # key in infra/versions.env, the line in scripts/install_runtime_deps.sh and this guard "in
+        # one commit". M4 is that milestone for agents/ -- LangGraph, LiteLLM and the two
+        # OpenTelemetry distributions -- so the third path joins the two the earlier milestones
+        # added. Without it, agents/tests/** arms the pytest step below while nothing installs what
+        # those tests import, which is the exact failure shape ADR-025 records M3 meeting twice.
+        #
+        # The script is invoked with NO ARGUMENT, which installs every component whose code is
+        # present in the tree. That is what keeps this step correct without an edit each milestone:
+        # the guard decides whether to run at all, and the script decides what to install, from the
+        # tree rather than from a list somebody has to remember to extend. ADR-025.
+        #
+        # M6 ADDS analysis/tests/**, THE SAME PROCESS ONE MILESTONE ON. analysis/stats reads the raw
+        # run bundles into pandas frames and computes the Wilson interval with statsmodels
+        # (evaluation-protocol section 3); those are runtime dependencies of the artefact's analysis,
+        # pinned in infra/versions.env and installed under the `analysis` component, so analysis/'s
+        # test path joins the three earlier ones in the commit that adds the pins (M6-C4, ADR-043).
+        # scripts/tests/** joins the guard at M10: the scoring suites import analysis.stats.loader
+        # (pandas) and drive real bundle sealing through runner, so they need the runtime dependencies
+        # the analysis and (transitively) runner components pin. install_runtime_deps.sh with no
+        # argument installs every present component, so no scripts-specific line is needed below it.
+        if: hashFiles('monitor/tests/**', 'guardian/tests/**', 'agents/tests/**', 'analysis/tests/**', 'scripts/tests/**') != ''
+        run: sh scripts/install_runtime_deps.sh
+      - name: Unit tests -- infra
+        if: hashFiles('infra/tests/**') != ''
+        run: python -m pytest infra/tests
+      - name: Unit tests -- monitor
+        if: hashFiles('monitor/tests/**') != ''
+        run: python -m pytest monitor/tests
+      - name: Unit tests -- guardian
+        if: hashFiles('guardian/tests/**') != ''
+        run: python -m pytest guardian/tests
+      - name: Unit tests -- agents
+        if: hashFiles('agents/tests/**') != ''
+        run: python -m pytest agents/tests
+      - name: Unit tests -- runner
+        if: hashFiles('runner/tests/**') != ''
+        run: python -m pytest runner/tests
+      - name: Unit tests -- scenarios
+        # M5's suite. Deliberately absent from the install-runtime-deps guard above: everything
+        # under scenarios/ is standard-library only -- the JSON Schema subset validator and the YAML
+        # subset reader exist for exactly that reason (ADR-035) -- so this step needs no dependency
+        # install, the same way infra/tests does not.
+        if: hashFiles('scenarios/tests/**') != ''
+        run: python -m pytest scenarios/tests
+      - name: Unit tests -- analysis
+        # M6's analysis suite (M6-C4). Unlike scenarios/, analysis/ HAS runtime dependencies
+        # (pandas, statsmodels, matplotlib), so the install-runtime-deps guard above arms on this
+        # same path and the pins reach this step. docs/04-repo-conventions.md section 1 adds the
+        # analysis/tests/ directory to the folder map in the same commit, so the hygiene check does
+        # not go red on an undeclared directory.
+        if: hashFiles('analysis/tests/**') != ''
+        run: python -m pytest analysis/tests
+      - name: Unit tests -- scripts
+        # M10's scripts suite. scripts/ grew server-side logic worth unit tests -- the scoring UI's
+        # provenance controls, the M10-constants mirror, the lock/rescore samplers -- and until now no
+        # CI step ran scripts/tests (scripts/tests/__init__.py's own note). It arms on the same
+        # hashFiles() pattern as the five components above, its runtime dependencies come from the
+        # install step already armed on scripts/tests/**, and the folder map in
+        # docs/04-repo-conventions.md section 1 lists scripts/tests/ so the hygiene check does not go red
+        # on an undeclared directory.
+        if: hashFiles('scripts/tests/**') != ''
+        run: python -m pytest scripts/tests
+
+      # --- nightly determinism check (04-repo-conventions.md section 4) ------------------
+      # Section 4 lists this one as "Nightly (optional)": replay every scenario twice per seed
+      # and diff the injected event sequences, which is the machine enforcement of
+      # none/.agents/rules/20-parity-and-determinism.md.
+      # Two guards, both false today, and each carries its own weight:
+      #   github.event_name == 'schedule' keeps it off pull requests. A replay campaign is
+      #   minutes of work rather than seconds, and it answers a question about the scenario
+      #   corpus rather than about the diff under review, so charging every push for it would
+      #   slow each change down to buy nothing.
+      #   The hashFiles guard keeps it inert until that corpus exists, so even a scheduled run
+      #   skips this step rather than invoking `make determinism-check`, which is still a
+      #   declared stub exiting 1.
+      # WHY THE SECOND GUARD NAMES FIVE SUBDIRECTORIES AND NOT 'scenarios/**'
+      #   The M0 plan writes this guard as hashFiles('scenarios/**'), but that glob is already
+      #   non-empty: scenarios/README.md is tracked, and `**` matches it. Written that way the
+      #   step would be held back by the schedule condition alone, and the very first nightly
+      #   run would invoke the stub and post a red result for a target nobody has written yet.
+      #   So the guard names the five content directories docs/04-repo-conventions.md section 1
+      #   draws under scenarios/ -- chaosmesh, cve, attackers, groundtruth, manifests -- none of
+      #   which is tracked or even present today. (AGENTS.md's table describes the contents in
+      #   prose and names no directories, so section 1 is the authority here.) This is the same
+      #   correction the guardian step below already carries: it is scoped to *.rego rather than
+      #   to guardian/policies/**, which guards against a future guardian/policies/README.md --
+      #   the existing guardian/README.md sits one level up and would not have matched either
+      #   glob. A guard has to test for the corpus, not
+      #   for the directory that will one day hold it, because the README announcing a
+      #   directory always lands before its contents do.
+      # A step rather than a fifth job, for the reason in the shape decisions at the top of
+      # this file: a job gated off on every pull request still appears in the check list as a
+      # skipped entry, and that permanent noise is exactly what the four-job shape avoids.
+      # M5 OBLIGATION, the same shape as the M4 obligation on the parity-check step below:
+      # whoever lands the first tracked file under any of those five directories must implement
+      # `make determinism-check` in that same commit. The second guard falls away the moment
+      # that file appears, and the next scheduled run invokes the target for real. Adding a
+      # sixth content directory under scenarios/ means adding it to the guard as well.
+      - name: Nightly determinism check
+        if: github.event_name == 'schedule' && hashFiles('scenarios/chaosmesh/**', 'scenarios/cve/**', 'scenarios/attackers/**', 'scenarios/groundtruth/**', 'scenarios/manifests/**') != ''
+        run: make determinism-check
+
+  slots:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+      - name: Verify dissertation slots
+        # THIS JOB IS BLOCKING. hashFiles() returns '' for a path that does not exist, so the
+        # expression below evaluates to false, continue-on-error is off, and a failing
+        # verify_slots.sh fails the job and the pull request.
+        #
+        # docs/.slots-advisory does not exist in this repository and never has. The T0.6
+        # binding pass closed inside M0, before this workflow ran for the first time, so there
+        # was never an interval in which unbound markers had to be tolerated on a pull request
+        # and no advisory file was ever needed or committed.
+        #
+        # The expression is kept rather than deleted because it is the escape hatch for the
+        # situation it was designed for, should a later milestone meet it: documentation that
+        # must land carrying markers ahead of the pass that binds them. Committing any file at
+        # docs/.slots-advisory re-arms it -- this step may then fail without failing the job,
+        # so the unbound markers stay visible as an annotation in the run log instead of making
+        # every pull request red -- and deleting that file again makes the job blocking. Both
+        # the arming and the flip back are file changes, so both are visible in git log and in
+        # the pull-request diff. Rejected alternative: a GitHub repository variable, which
+        # lives in repository settings -- invisible to git and to the examiner, and unable to
+        # be part of a commit.
+        #
+        # Step-level rather than job-level because hashFiles() is only permitted in step
+        # expressions and reads the runner workspace, which is empty until checkout runs --
+        # a job-level toggle could never see the file at all.
+        continue-on-error: ${{ hashFiles('docs/.slots-advisory') != '' }}
+        run: sh scripts/verify_slots.sh
+
+  guardrail-grep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+      - name: Rule 10 grep guard
+        # Machine enforcement of none/.agents/rules/10-guardian-first.md: nothing under agents/
+        # talks to the Kubernetes API except through the Guardian client.
+        run: sh scripts/grep_guard.sh
+      - name: Rule 40 monitor guard
+        # Machine enforcement of none/.agents/rules/40-monitor-non-llm.md, the symmetric counterpart of
+        # the step above: nothing under monitor/ imports an LLM SDK, calls an inference endpoint,
+        # reads a provider credential or a model pin, or makes a model call by any route. The
+        # Monitor is typed `deterministic, non-LLM` by docs/02-architecture.md section 1 and FR1.4
+        # requires it end to end -- before M2 that was a claim in four documents and a check in
+        # none. A second block is a determinism tripwire over monitor/aggregator/ (uuid, wall
+        # clock, unseeded randomness, direct sockets); the byte-level twice-and-diff is the actual
+        # proof, and the script's header says so rather than implying the grep is the guarantee.
+        #
+        # ALWAYS RUNS, LIKE THE STEP ABOVE, AND FOR THE SAME REASON.
+        # The script handles its own pre-M2 vacuous pass, so there is no hashFiles() guard to go
+        # stale, and a guard would in any case be wrong here: the whole point is that the boundary
+        # is enforced from before the first line of monitor code exists.
+        #
+        # A STEP IN THIS JOB, NOT A FIFTH JOB. docs/04-repo-conventions.md section 4 and this
+        # file's own header both fix ci.yml at four named jobs, because a job whose `if` is false
+        # still appears on the pull request as a skipped entry. M1 met the same pressure and
+        # resolved it the other available way -- a separate, path-filtered workflow (ADR-017) --
+        # which is right for a fifteen-minute cluster bring-up and wrong for a grep that takes a
+        # second. ADR-020.
+        run: sh scripts/monitor_guard.sh
+      - name: Scenario boundary guard
+        # Machine enforcement of the three boundaries the injection harness is built on, added at M5
+        # (docs/plans/M5-implementation-plan.md section D11). Block (a) is the static half of NFR2
+        # for scenarios/: the planner reads no clock and takes no unseeded draw. Block (b) is the
+        # plan/apply split -- cluster access lives in scenarios/attackers/apply.py and nowhere else,
+        # and the guard also asserts the applier IS one, so the split cannot be inverted. Block (c)
+        # is the trust boundary docs/02-architecture.md section 5 draws: no import edge between
+        # agents/ and scenarios/ in either direction. The byte-level twice-and-diff in
+        # scripts/scenario_determinism.sh is the actual proof of determinism; this guard is the
+        # tripwire, and its header says so rather than implying the grep is the guarantee.
+        #
+        # ALWAYS RUNS, LIKE THE THREE STEPS ABOVE, AND FOR THE SAME REASON.
+        # The script handles its own pre-corpus vacuous pass, so there is no hashFiles() guard to go
+        # stale, and a boundary is enforced from before the first line of the code it governs. A
+        # step in this job, not a fifth job -- ADR-020, ADR-035.
+        run: sh scripts/scenario_guard.sh
+      - name: Prompt purity grep
+        # The third boundary step in this job. M0 deliberately left one question open here:
+        # scripts/grep_guard.sh's header names "prompt registry text that names kubectl while
+        # describing what an Executor may ask the Guardian to do" as the likely first false positive
+        # of rule 10's guard, and reserves the answer for an M4 ADR. ADR-029 is that answer and
+        # refuses the hole: no allowlist, no inline sentinel, no narrowing of grep_guard.sh's scope
+        # to *.py. Prompts speak the tool registry's vocabulary instead -- and enforcing THAT needs
+        # no new check, because grep_guard.sh already scans every tracked file under agents/, the
+        # registry text under agents/prompts/ included.
+        #
+        # SO THIS STEP CARRIES RULE 20'S BOUNDARY, NOT RULE 10'S: "prompts exist only in
+        # agents/prompts/ registry files; code composes, never contains, prompt text". Three blocks,
+        # three claims: (a) no prompt-shaped literal under agents/graphs/ or agents/tools/, matched
+        # by construct rather than by word so that a docstring explaining the rule cannot trip it;
+        # (b) every block file under agents/prompts/blocks/ is reached by a composition manifest;
+        # (c) every doc_block id named in agents/tools/registry.py resolves to a file under that
+        # directory.
+        #
+        # ALWAYS RUNS, LIKE THE TWO STEPS ABOVE, AND FOR THE SAME REASON.
+        # No hashFiles() guard: the script handles its own pre-M4 vacuous pass, exactly as
+        # monitor_guard.sh handles its pre-M2 one, so there is no guard here to go stale -- and a
+        # guard would be wrong in any case, because a boundary is enforced from before the first
+        # line of the code it governs exists. A guarded purity check would be armed by the very
+        # file it is meant to police, which is the wrong way round.
+        run: sh scripts/prompt_purity_grep.sh
+      - name: Prompt parity check
+        # ARMED AT M4, WHICH IS THIS MILESTONE. agents/prompts/ was empty and untracked through M3,
+        # so hashFiles() returned '' and this step was inert; the first tracked file under it turns
+        # the step on, including a .gitkeep or a README. The glob was left deliberately wide because
+        # 04-repo-conventions.md section 4 and the M0 plan specify it verbatim, and the obligation
+        # it created was that M4 implement `make parity-check` in the same commit that puts the
+        # first file there. That obligation is discharged here: the target is a real delegator to
+        # scripts/parity_check.sh, not the stub that would have failed this job.
+        #
+        # WHY THIS CAN PASS INSIDE A JOB THAT INSTALLS NOTHING -- conflict M4-C1's resolution, and
+        # worth stating at the step it decides. guardrail-grep checks out and runs shell scripts;
+        # it has no Python dependency step and, per the hygiene job's note below, adding one would
+        # break the job shape section 4 assigns. The parity check must nevertheless parse the
+        # composition manifests and count tokens. It can, because the checker under agents/registry/
+        # is STANDARD LIBRARY ONLY: no PyYAML, no pydantic, no tokenizer package. The manifest
+        # subset the parity policy fixes is parsed by the same awk-grade discipline
+        # infra/status/components.yaml already imposes on scripts/status.sh, and PARITY_TOKENIZER in
+        # infra/versions.env names a reference tokenizer that ships with the registry rather than a
+        # dependency to resolve. The alternative considered and rejected was a `pip install` inside
+        # a grep job -- which is the same install-in-a-job-that-has-none pressure ADR-025 answered
+        # for `opa` by making the gate script self-contained, and the answer here is the stronger
+        # form of it: not "acquire it yourself" but "need nothing".
+        #
+        # It lives inside guardrail-grep rather than as a fifth job so the pull-request check list
+        # stays at exactly four named jobs -- a permanently-skipped fifth entry is noise.
+        if: hashFiles('agents/prompts/**') != ''
+        run: make parity-check
+
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+      - name: Read the single-homed Python pin
+        id: python-pin
+        if: hashFiles('guardian/policies/**/*.rego') != ''
+        shell: bash
+        run: |
+          set -eu
+          version=$(sed -n 's/^PYTHON_VERSION=//p' infra/versions.env)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Set up isolated Python
+        # Hygiene only needs an interpreter when .rego exists (inert until M3); the guard
+        # avoids the toolcache cost on every PR while guaranteeing PATH ordering makes
+        # install_runtime_deps.sh + make guardian-test python3 resolve to this same
+        # isolated interpreter. Version read from versions.env, not duplicated here.
+        if: hashFiles('guardian/policies/**/*.rego') != ''
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ steps.python-pin.outputs.version }}
+          cache: pip
+      - name: Repository hygiene
+        # docs/04-repo-conventions.md sections 1 and 5 as an executable check: ignore
+        # coverage, nothing forbidden tracked, index EOLs, asserted directories.
+        run: sh scripts/check_hygiene.sh
+      - name: Install Guardian gate test runner
+        # Python comes from setup-python above rather than the runner's system interpreter, which
+        # may enforce PEP 668 and correctly reject direct pip installs.
+        if: hashFiles('guardian/policies/**/*.rego') != ''
+        run: python -m pip install pytest==8.4.2
+      - name: Install Guardian runtime dependencies
+        # Python comes from setup-python above rather than the runner's system interpreter, which
+        # may enforce PEP 668 and correctly reject direct pip installs.
+        if: hashFiles('guardian/policies/**/*.rego') != ''
+        run: sh scripts/install_runtime_deps.sh guardian
+      - name: Guardian policy tests
+        # Inert until M3: hashFiles() is empty while guardian/policies/ holds no .rego
+        # files, and the make target is a declared stub until then. Same placement
+        # rationale as the parity step above.
+        if: hashFiles('guardian/policies/**/*.rego') != ''
+        run: make guardian-test
+
+      # --- M10 hygiene gates (ADR-120, ADR-135) -----------------------------------------
+      # Two script-level gates that need no cluster: the synthetic treatment-fidelity check (P4) and the
+      # lock-drift check (V23). Both use the isolated interpreter the .rego-guarded setup above provides
+      # (guardian/policies/ has held .rego since M3, so it is always present here); they arm on their own
+      # inputs so a repository without them stays green, exactly as every other guarded step does.
+      - name: Synthetic fidelity check
+        # P4: prove the treatment-fidelity checks flag synthetic defects, over a synthetic corpus and no
+        # cluster (the v1 corpus is gitignored and absent here; scripts/known_bad_replay.sh runs the real
+        # corpus locally). runner.fidelity and runner.synthetic are standard-library only, so this needs
+        # no runtime-dependency install. It builds a small synthetic corpus into a temp dir, so it costs a
+        # short build; the researcher may narrow the guard to `schedule` if that cost is unwelcome.
+        if: hashFiles('runner/fidelity/**') != ''
+        run: sh scripts/fidelity_check.sh
+      - name: Install the pinned uv
+        # Pinned as a literal here rather than in infra/versions.env, on the ADR-011 boundary the ruff
+        # and pytest pins already sit on: uv is the lock RESOLVER, development tooling, not part of the
+        # evaluated artefact -- what the artefact freezes is requirements.lock, which uv produces. The
+        # isolated interpreter comes from the .rego-guarded setup above.
+        if: hashFiles('requirements.lock') != ''
+        run: python -m pip install uv==0.12.13
+      - name: Lock drift
+        # V23 / ADR-135: requirements.lock must be the lock scripts/generate_lock.sh produces from
+        # infra/versions.env. Regenerate it and fail if it changed -- a red diff means a versions.env pin
+        # moved without the lock being regenerated, or the lock was hand-edited. uv reads the existing
+        # requirements.lock as resolution preferences, so an unchanged versions.env reproduces it exactly.
+        if: hashFiles('requirements.lock') != ''
+        run: |
+          sh scripts/generate_lock.sh
+          git diff --exit-code requirements.lock

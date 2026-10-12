@@ -1,0 +1,46 @@
+# Templated from guardian/deploy/g2-rbac.yaml -- the G2-SHAREDCRED arm's scoped alternate
+# identity. Gated by values.yaml agents.g2.enabled (default false). No token or Secret is
+# created here, matching the source file's own comment: the bounded token is requested at run
+# time, out of band, with the operator's own kubeconfig (ADR-024) -- never by this chart and
+# never by guardian/ or agents/ code.
+{{- if .Values.agents.g2.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: g2-executor
+  namespace: {{ .Values.namespaces.agents }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: g2-shared-credential
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: g2-executor-read-pods
+  namespace: {{ .Values.namespaces.boutique }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: g2-shared-credential
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: g2-executor-read-pods
+  namespace: {{ .Values.namespaces.boutique }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: g2-shared-credential
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: g2-executor-read-pods
+subjects:
+  - kind: ServiceAccount
+    name: g2-executor
+    namespace: {{ .Values.namespaces.agents }}
+{{- end }}

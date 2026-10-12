@@ -1,0 +1,148 @@
+# infra/kind-config.yaml -- the kind cluster every other layer of this project is built on, and the
+# first artefact of milestone task M1-T1.1. It is consumed as
+# `kind create cluster --config infra/kind-config.yaml --image "$KIND_NODE_IMAGE"`, by
+# scripts/up.sh once M1-T1.6 wires it and by the `bringup` job in
+# .github/workflows/env-bringup.yml through that same path.
+#
+# WHY THE NODE IMAGE IS NOT NAMED IN THIS FILE
+#   kind's schema accepts a per-node `image:` field, and both nodes below deliberately omit it. The
+#   node image is pinned exactly once, as the `KIND_NODE_IMAGE` key of infra/versions.env, which
+#   docs/03-tech-stack.md section 5 makes the single home for every version and digest in the
+#   repository and whose normalised hash docs/protocols/data-management.md section 2 records in
+#   every run manifest as the identity of the stack a run was produced on. A second copy of the pin
+#   here would be a second thing to update and a second thing to forget, and the run manifest would
+#   go on naming the versions.env value while the cluster ran on this one. The caller supplies the
+#   pin on the command line instead. A reader who comes to this file expecting to find the
+#   Kubernetes version and does not find it is looking at the intended design rather than at an
+#   omission.
+#
+# WHY TWO NODES AND NOT ONE
+#   The NetworkPolicy enforcement proof in scripts/netpol_proof.sh runs twice, once with the client
+#   and the server scheduled onto the same node and once with them on different nodes, and neither
+#   case subsumes the other. Cross-node is where a half-configured datapath most often leaks,
+#   because the packet has to survive encapsulation and decapsulation before any policy decision is
+#   reached. Same-node is where a policy enforced only at the encapsulation layer would falsely
+#   pass, because such a policy never sees a purely local flow at all. A single-node cluster can
+#   only ever run the second case, so it could return a green result for a datapath that does not
+#   enforce anything across the wire. The cost of the second node is roughly 400-600 MB of the
+#   WSL2 utility VM's memory, which the `.wslconfig` allocation in docs/04-repo-conventions.md
+#   section 2 is sized to absorb; if a host cannot carry it, dropping to a single node is a
+#   deliberate, logged deviation recorded in ADR-001, not a silent edit to this file.
+#
+# WHY TWO AND NOT MORE
+#   Two nodes is the smallest cluster on which both cases are expressible, and nothing above this
+#   file needs a third. Online Boutique fits comfortably on one worker, and the experiment measures
+#   agent behaviour rather than scheduler behaviour, so additional nodes would buy memory pressure
+#   and no evidence.
+#
+# WHY THE DEFAULT CNI IS DISABLED
+#   kind installs kindnet by default, and kindnet does not implement NetworkPolicy. A cluster with
+#   kindnet present would accept every NetworkPolicy object the API server was given and enforce
+#   none of them, which is precisely the false green that the four-part proof exists to rule out.
+#   Turning the default CNI off makes Cilium the sole CNI, so a policy that is accepted is a policy
+#   that is watched. The consequence is that nodes stay NotReady and no pod schedules until
+#   infra/cilium/install.sh has run; that ordering is intentional and is why T1.1 is the first task
+#   of the milestone.
+#
+# WHY KUBE-PROXY IS KEPT
+#   `networking.kubeProxyMode` is absent below, which leaves kind at its own default of `iptables`
+#   (kind v1alpha4 defaults an empty KubeProxyMode to IPTablesProxyMode), so kube-proxy runs and
+#   handles Service translation. The rejected alternative is Cilium's eBPF kube-proxy replacement:
+#   `kubeProxyReplacement: true` in the Helm values requires `kubeProxyMode: none` here so that
+#   kind does not deploy kube-proxy at all, and then requires `k8sServiceHost` and `k8sServicePort`
+#   to be wired into the Cilium values by hand, because with no kube-proxy the agent cannot reach
+#   the API server through the kubernetes ClusterIP it would otherwise use to bootstrap. That is
+#   more configuration, and a materially larger eBPF surface attached to the host, in exchange for
+#   a capability this milestone does not need: policy enforcement, which is the thing under test,
+#   does not depend on who implements Services. The larger eBPF surface is also more exposure to
+#   R-03, the kernel and eBPF compatibility risk that this milestone is meant to surface early
+#   rather than accumulate. Keeping kube-proxy is the well-trodden path, and this file
+#   deliberately takes it.
+#
+# WHY THE POD SUBNET IS STATED EXPLICITLY
+#   10.244.0.0/16 is already kind's IPv4 default, so this line changes no behaviour. It is written
+#   out because it is the value that has to agree with Cilium's addressing, and a coupling that is
+#   only true by coincidence of two defaults is a coupling nobody will notice breaking. kind passes
+#   this range to kube-controller-manager as --cluster-cidr, the controller manager carves a
+#   per-node .spec.podCIDR out of it, and infra/cilium/values.yaml sets `ipam.mode: kubernetes` so
+#   that Cilium allocates addresses from that per-node field rather than from a range of its own.
+#   Stating the subnet here puts the shared value where a reader will look for it.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Setting `disableDefaultCNI: false` silently disarms the enforcement proof. Removing the worker
+#   node reduces the proof to its weaker half. Changing `podSubnet` without changing Cilium's IPAM
+#   mode in the same commit leaves two components disagreeing about where pod addresses come from.
+#   Adding an `image:` field reintroduces the second pin this file exists to avoid.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+
+networking:
+  # kindnet off. Cilium, installed by infra/cilium/install.sh, is the only CNI in this cluster.
+  disableDefaultCNI: true
+  # Matches `ipam.mode: kubernetes` in infra/cilium/values.yaml; see the note above.
+  podSubnet: "10.244.0.0/16"
+  # kubeProxyMode is deliberately absent, leaving kind's default of iptables. See WHY KUBE-PROXY
+  # IS KEPT above before adding it.
+
+nodes:
+  # No `image:` on either node: the pin is infra/versions.env's KIND_NODE_IMAGE, passed by the
+  # caller as `kind create cluster --image "$KIND_NODE_IMAGE"`.
+  - role: control-plane
+    # Kubernetes audit logging is an API-server feature, not a separately versioned component.
+    # kind resolves these repository-relative host paths when it creates the node container.
+    extraMounts:
+      # ADR-095: mount the audit-policy DIRECTORY, never the file. On the Docker Desktop WSL2 profile
+      # a host-FILE bind mount does not survive a Docker Desktop or `wsl --shutdown` restart: DD's
+      # bind-mount cache regenerates the file entry as a directory, and the control-plane container
+      # then fails to start with `mounting ".../audit-policy.yaml" ... not a directory: Are you
+      # trying to mount a directory onto a file?` (runc exit 127), which silently kills every run on
+      # the cluster until it is recreated. A DIRECTORY bind mount is stable across those restarts.
+      # infra/audit holds only audit-policy.yaml, so the directory exposes nothing extra; the api
+      # server reads the file from inside the mounted directory.
+      - hostPath: infra/audit
+        containerPath: /etc/kubernetes/overwatch-audit
+        readOnly: true
+      - hostPath: monitor/runtime/evidence
+        containerPath: /var/lib/overwatch/evidence
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            audit-policy-file: /etc/kubernetes/overwatch-audit/audit-policy.yaml
+            audit-log-path: /var/lib/overwatch/evidence/k8s_audit.jsonl
+            audit-log-format: json
+            # ADR-137: no rotation. runner/live_evidence.py::collect_api_audit slices k8s_api_audit.jsonl
+            # from a byte offset recorded when the measurement window opens; a rotation between open and
+            # close would move or truncate the file under that offset and produce a wrong or empty slice.
+            # audit-log-maxsize=0 disables size rotation (the API server default is 100MB, which a
+            # campaign's log crosses) and audit-log-maxbackup=0 keeps a single file. The log then grows
+            # unbounded across a campaign -- a disk cost the VM carries, not a correctness one, since the
+            # slice only ever reads the window's own tail past the offset.
+            audit-log-maxsize: "0"
+            audit-log-maxbackup: "0"
+          extraVolumes:
+            - name: overwatch-audit-policy
+              hostPath: /etc/kubernetes/overwatch-audit
+              mountPath: /etc/kubernetes/overwatch-audit
+              readOnly: true
+              pathType: Directory
+            - name: overwatch-evidence
+              hostPath: /var/lib/overwatch/evidence
+              mountPath: /var/lib/overwatch/evidence
+              readOnly: false
+              pathType: Directory
+  - role: worker
+    # The same host directory is visible in both kind nodes. The Trivy Job can be scheduled on
+    # either node and still writes the canonical path consumed by the evidence ingestion surface.
+    #
+    # ADR-062: on the Docker Desktop WSL2 profile this "visible in both nodes" assumption does
+    # not hold. When OVERWATCH_EVIDENCE_DIR is an ext4 path, only one node container receives the
+    # real bind (the host dir lives in the Ubuntu distro; the kind nodes run in the docker-desktop
+    # distro, and the other node gets a phantom auto-created empty directory). The real bind is
+    # the control-plane node, so monitor/deploy pins both the aggregator and the audit-forwarder
+    # there. This worker mount is retained deliberately, not removed: a single-distro Linux host
+    # honours both binds, and on the WSL2 profile it is simply unused.
+    extraMounts:
+      - hostPath: monitor/runtime/evidence
+        containerPath: /var/lib/overwatch/evidence

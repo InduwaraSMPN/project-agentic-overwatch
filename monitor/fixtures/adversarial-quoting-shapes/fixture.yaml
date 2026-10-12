@@ -1,0 +1,16 @@
+# Fixture manifest -- flat `key: value`, no nesting and no lists. See monitor/fixtures/README.md
+# for the format, the key set, and why the corpus_cap_* values are not evaluation-protocol values.
+fixture_id: adversarial-quoting-shapes
+source: falco,k8s_audit
+provenance: synthesised
+synthesised_from: The Falco JSON alert and audit.k8s.io/v1 Event shapes the two single-source fixtures beside this one cite, carrying payloads authored from the attack classes monitor/aggregator/quoting.py names in its escaping-alphabet table. The record shapes are documented; the payloads are invented, and no attacker produced them.
+capture_commit:
+source_tool_version:
+seed:
+golden_arm: G0-FULL
+audit_severity: critical
+corpus_cap_status: FIXTURE-CORPUS-TEST-PARAMETER
+corpus_cap_excerpt_count_max: 8
+corpus_cap_excerpt_length_max_chars: 220
+corpus_cap_summary_length_max_chars: 320
+description: Environment-controlled text carrying every injection shape quoting.py defends against, in the fields an attacker can actually set -- a container name, a process command line, an OIDC username, a user agent and an RBAC annotation. Covers a frame-break attempt that closes the quoted region and writes a fake operator instruction before reopening it, a right-to-left override, ANSI escape introducers, NUL and BEL, a zero-width space, a zero-width no-break space, a line separator, tag characters that mirror ASCII while rendering as nothing, and a literal backslash. Its caps are the loosest in the corpus on purpose, so that every shape survives into the golden output rather than being truncated away before quoting ever sees it.

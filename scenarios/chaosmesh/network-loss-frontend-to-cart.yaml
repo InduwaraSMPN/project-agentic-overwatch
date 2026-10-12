@@ -1,0 +1,123 @@
+# scenarios/chaosmesh/network-loss-frontend-to-cart.yaml -- one fault primitive, one file. This is
+# the partial-connectivity primitive: it drops a fraction of the packets frontend sends to
+# cartservice, so the path is degraded rather than broken and rather than merely slow.
+#
+# WHAT THIS PERTURBS
+#   The frontend-to-cartservice edge, in the egress direction, and nothing else. Both pods stay
+#   Ready, both Deployments stay at their declared replica count, and the two PodChaos primitives'
+#   observables -- a replica gap, a restartCount increment -- do not appear at all. What appears is
+#   a raised error rate on one edge with everything around it healthy, which is the third distinct
+#   degradation shape this directory offers and the one that most resembles a real partial network
+#   fault.
+#
+# WHICH SCENARIO USES IT
+#   SCN-SIM-01, as the background degradation the incident is staged against rather than as the
+#   incident itself. That scenario's first signal is Falco -- a shell executed inside the
+#   cartservice container, then an outbound beacon -- and the loss is what stops a "detection" of it
+#   from being an artefact of the service simply going down: with the frontend-to-cart path already
+#   lossy, an availability-shaped alarm is already ringing before the compromise begins, so a
+#   detection that counts as correct has to be the security signal and not the availability one. A
+#   scenario in which the only anomaly is the attack makes detection easy in a way no real cluster
+#   is.
+#
+# SCOPED TO THE boutique NAMESPACE ON BOTH SIDES, AND THAT IS A HARD RULE
+#   metadata.namespace is boutique, and both the source and the target selector carry
+#   namespaces: [boutique] as their own block. NetworkChaos is the class where forgetting this costs
+#   the most: the Monitor, the Guardian, the agents and the trace plane speak over the same cluster
+#   network from other namespaces, and a loss rule that escaped boutique would drop the instrument's
+#   own traffic. A
+#   detection missed because the evidence packet was dropped is indistinguishable, in a run bundle,
+#   from a detection missed because the agent failed -- and that is a confound no analysis recovers
+#   from. Both selectors are bounded because both decide.
+#
+# mode: one ON THE SOURCE, mode: all ON THE TARGET
+#   The source is the one pod being degraded, while the target must cover every cartservice replica
+#   or the fault would apply only to requests that happened to be balanced onto one of them. `all`
+#   on the target keeps the perturbation a property of the path rather than of the load balancer.
+#   The residual this class carries -- that WHICH pod `mode: one` selects becomes Chaos Mesh's choice
+#   rather than the plan's the moment a service has more than one replica -- applies here unchanged
+#   and is not restated.
+#
+# THERE IS NO duration FIELD AND NO scheduler, AND THAT IS A DECISION
+#   Lifetime belongs to the applier. The injection plan owns when things happen, as logical offsets
+#   in integer milliseconds from t0; the teardown owns when they stop. A `duration` here would put a
+#   second, wall-clock-shaped timeline beside the plan's logical one, and two timelines that can
+#   disagree make (scenario_id, seed) replay non-reproducible -- the property traceability row T-17
+#   rests on. This is the argument infra/locust/profiles.yaml lines 28-41 make for refusing a
+#   `duration` key in the load registry: how long something runs is a property of the run, not of
+#   the shape. Without a duration this NetworkChaos runs until the applier deletes it, which is what
+#   makes the plan the only timeline in play. A `scheduler:`/cron block is refused more firmly
+#   still, because it would put the wall clock inside the fault itself.
+#
+# THE ONE PRIMITIVE THAT IS GENUINELY STOCHASTIC, AND WHAT THAT DOES AND DOES NOT MEAN
+#   Packet loss is a coin flip per packet. Nothing in this file, and nothing in the injection plan,
+#   makes the kernel's netem draw reproducible -- two runs at one seed will drop different packets.
+#   That is not a determinism defect, and saying why is better than leaving a reader to wonder.
+#   docs/plans/M5-implementation-plan.md section D1 separates the planner from the applier precisely
+#   here: the determinism gate compares PLANS, which are descriptions of what will be injected, and
+#   never the cluster's response to them. What must be byte-identical across two runs at one seed is
+#   the injected sequence -- this CRD, applied at this offset, torn down at that one. The cluster's
+#   reaction is a measurement, and measurements vary; that is what the campaign's repeated runs and
+#   the protocol's statistics are for. The same shape as ADR-019 holding latency.json out of the
+#   Monitor's `cmp`: the non-reproducible quantity is confined to something the check does not read,
+#   rather than being asserted away.
+#
+#   The consequence is a real one and belongs in the record: a scenario whose ground truth depended
+#   on a specific packet being dropped would be unscoreable. SCN-SIM-01's does not -- it asserts on
+#   the security signal, and the loss is background.
+#
+# WHY loss AND correlation ARE FAULT PARAMETERS AND NOT PROTOCOL CONSTANTS
+#   `loss` is the injected fault itself -- the independent variable, the thing the perturbation IS
+#   -- in the same way infra/locust/profiles.yaml's `users` is the load shape rather than a
+#   threshold on load. It is not a criterion any measured value is compared against, and that is the
+#   test that separates it from the quantities .agents/rules/00-source-of-truth.md single-homes in
+#   docs/protocols/evaluation-protocol.md. Change this number and the fault is different, and the
+#   ground truth changes with it; change a threshold and the fault is identical while the verdict on
+#   it moves. Only the first kind of number may appear in this directory. No seed, no run count, no
+#   threshold and no budget appears here.
+#
+#   correlation is zero, written out rather than defaulted, and for a sharper reason than in the
+#   delay primitive: a non-zero correlation makes each drop depend on the previous one, turning an
+#   independent-loss process into a bursty one whose behaviour over a short window is dominated by
+#   its own history. Independent loss at least has a stable expectation over a measurement window.
+#   Bursty loss does not, and the run-to-run variance it adds is variance nothing in the design
+#   accounts for.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   SCN-SIM-01's ground truth is written against a cluster in which this edge is degraded by THIS
+#   amount. Raising the loss far enough turns the background into an outage and makes the scenario a
+#   different scenario; removing it makes the detection claim easier than the ground truth says it
+#   is. Either way, every already-sealed bundle naming that scenario keeps its identifier while
+#   describing a different environment. A different degradation is a new primitive file with a new
+#   metadata.name, referenced from the manifest's `primitives` list -- never an edit in place.
+#
+# THE FORMAT IS DELIBERATELY SMALLER THAN YAML
+#   Block style only: no flow collections, no anchors or aliases, no tags, no multi-document files,
+#   no tabs. scenarios/schemas/yamlsubset.py is the offline reader these files are validated
+#   against, and it refuses everything outside that subset by design. The two loss values below are
+#   quoted because the Chaos Mesh API types them as strings and because an unquoted `25` would be
+#   read as an integer by a reader that types its scalars.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-loss-frontend-to-cart
+  namespace: boutique
+spec:
+  action: loss
+  mode: one
+  selector:
+    namespaces:
+      - boutique
+    labelSelectors:
+      app: frontend
+  direction: to
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - boutique
+      labelSelectors:
+        app: cartservice
+  loss:
+    loss: "25"
+    correlation: "0"

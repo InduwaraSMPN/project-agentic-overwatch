@@ -1,0 +1,58 @@
+# Trivy ignore file -- accepted residual findings for the self-scan gate (M8-T8.4).
+# Consumed by scripts/self_scan.sh via `trivy --ignorefile` when SELF_SCAN_TRIVYIGNORE points
+# here (wired in .github/workflows/self-scan.yml). Format, policy and review process:
+# docs/ops/sbom.md section 6; tool-choice rationale: docs/adr/ADR-115-sbom-and-self-scan.md.
+#
+# WHAT THIS FILE IS, AND IS NOT
+#   Each entry below accepts ONE finding for the gate decision only. The full, unsuppressed
+#   vulnerability report (<image>.trivy-full.json) is written regardless and lists the finding
+#   anyway -- this file never hides a CVE from the record, it only stops that one CVE from failing
+#   the CI gate until its `expires` date, at which point Trivy itself re-fails it (the enforcement
+#   is the scanner's native `expires`, not a wrapper this repo maintains).
+#
+# REVIEWED AND SIGNED OFF, 2026-09-23. These five entries are the base-layer CRITICALs the
+#   2026-09-23 self-scan found in all three images (guardian, evidence-aggregator, slo-probe),
+#   all from the shared debian-12-bookworm base, all with NO fixed version available at any
+#   version (Trivy `FixedVersion` empty). Accepting them was the researcher's decision, recorded
+#   in the commit that carries this file (docs/ops/sbom.md section 6: "adding an entry goes
+#   through the same pull-request review as any other change"); the accountable owner named in
+#   each statement is pasindunaduninduwara. Independent confirmation is the 2026-09-23 GitHub
+#   Actions self-scan run (actions/runs/35876009662), whose gate passed at CRITICAL with exactly
+#   these five accepted. If the disposition is later changed to "bump the base image", delete the
+#   matching entries rather than renewing them.
+#
+# WHY THESE ARE ACCEPTABLE (all five)
+#   They live in debian base packages this project does not own, none has an upstream fix at any
+#   version yet, and none is reachable from the images' own entrypoints, which run a single Python
+#   service each (python -m guardian.app / monitor.http_service / the probe) and invoke neither the
+#   perl interpreter, sqlite, nor zlib's zipOpenNewFileInZip4_64 archive path. They are tracked for
+#   the next base-image bump; `expires` forces a revisit.
+
+vulnerabilities:
+  - id: CVE-2025-7458
+    # libsqlite3-0 3.40.1-2+deb12u2 (debian 12 base). SQLite integer overflow; no fixed version.
+    # The Python services do not open attacker-controlled SQLite databases through this path.
+    # Owner: pasindunaduninduwara. Reviewed 2026-09-23; revisit at the next base-image bump.
+    statement: "base-image (debian 12) libsqlite3-0, no fix available; not reachable from the service entrypoint. Owner: pasindunaduninduwara. Reviewed 2026-09-23."
+    expires: 2026-12-22T00:00:00Z
+  - id: CVE-2026-8376
+    # perl-base 5.36.0-7+deb12u3 (debian 12 base). Perl heap buffer overflow; no fixed version.
+    # No image entrypoint invokes the perl interpreter. Owner: pasindunaduninduwara. Reviewed 2026-09-23.
+    statement: "base-image (debian 12) perl-base, no fix available; perl is not invoked by any image entrypoint. Owner: pasindunaduninduwara. Reviewed 2026-09-23."
+    expires: 2026-12-22T00:00:00Z
+  - id: CVE-2026-42496
+    # perl-base 5.36.0-7+deb12u3 (perl-archive-tar). Crafted-symlink issue; no fixed version.
+    # No image extracts tar archives via perl. Owner: pasindunaduninduwara. Reviewed 2026-09-23.
+    statement: "base-image (debian 12) perl-base (archive-tar), no fix available; not exercised by any image entrypoint. Owner: pasindunaduninduwara. Reviewed 2026-09-23."
+    expires: 2026-12-22T00:00:00Z
+  - id: CVE-2026-13221
+    # perl-base 5.36.0-7+deb12u3. Regex handling of large expressions; no fixed version.
+    # No image entrypoint invokes perl. Owner: pasindunaduninduwara. Reviewed 2026-09-23.
+    statement: "base-image (debian 12) perl-base, no fix available; perl is not invoked by any image entrypoint. Owner: pasindunaduninduwara. Reviewed 2026-09-23."
+    expires: 2026-12-22T00:00:00Z
+  - id: CVE-2023-45853
+    # zlib1g 1:1.2.13.dfsg-1. Integer overflow in zipOpenNewFileInZip4_64 (MiniZip); no fixed
+    # version, and debian marks it will_not_fix. The services do not use MiniZip's zip-creation
+    # path. Owner: pasindunaduninduwara. Reviewed 2026-09-23.
+    statement: "base-image (debian 12) zlib1g MiniZip path, debian will_not_fix; not used by any image entrypoint. Owner: pasindunaduninduwara. Reviewed 2026-09-23."
+    expires: 2026-12-22T00:00:00Z

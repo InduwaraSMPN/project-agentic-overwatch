@@ -1,0 +1,5 @@
+{
+  "audit_chain_head": "44b07bda86f2a0a7c35b957c0cff2bcc23ffc446119db6dc8ff6098186229274",
+  "audit_chain_records": 9,
+  "note": "The head anchor, in the place docs/protocols/data-management.md section 1 puts it: seal.json carries 'bundle content hashes + chain head + sealed_at'. Only the chain head is here. The content hashes and sealed_at are M6's sealer's to write and inventing them in a fixture would be inventing a schema no protocol has fixed; the key name below is guardian/audit/verify.py's proposed contract for that sealer, flagged as a proposal there and flagged again here. What this file is for is the pair of truncation results: with this anchor the tail-truncation and whole-chain-rewrite fixtures are caught, and without it they verify clean."
+}

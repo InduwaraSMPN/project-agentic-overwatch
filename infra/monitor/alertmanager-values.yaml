@@ -1,0 +1,21 @@
+# Values validated against prometheus-community/alertmanager chart 1.35.0
+# (Alertmanager v0.32.0). This is a standalone release; the Prometheus chart's
+# bundled Alertmanager remains disabled.
+
+replicaCount: 1
+
+config:
+  enabled: true
+  global: {}
+  templates: []
+  route:
+    receiver: evidence-aggregator
+    group_by: [alertname, namespace]
+  receivers:
+    - name: evidence-aggregator
+      webhook_configs:
+        - url: http://evidence-aggregator.monitor.svc.cluster.local:8080/v1/alertmanager
+          send_resolved: true
+
+persistence:
+  enabled: false

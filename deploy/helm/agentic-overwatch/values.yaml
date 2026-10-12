@@ -1,0 +1,270 @@
+# deploy/helm/agentic-overwatch/values.yaml
+#
+# Packaging overlay for the frozen v1.0 artifact (docs/milestones/M8-hardening.md T8.1). This
+# chart templates the EXISTING manifests -- guardian/deploy/*.yaml, monitor/deploy/*.yaml,
+# infra/netpol/agents-default-deny.yaml, infra/netpol/agents-g2-open.yaml,
+# infra/netpol/guardian-ingress.yaml -- it does not change what Guardian, the Monitor or the
+# agent layer do. At the defaults below, `helm template` renders objects that are
+# functionally identical (same names, namespaces, verbs, ports, labels) to applying those
+# files directly with kubectl. See docs/adr/ADR-113-helm-chart-packaging.md.
+#
+# SOURCE OF TRUTH. Per .agents/rules/00-source-of-truth.md, quantitative parameters (token
+# TTLs, replay-cache size, run counts, budgets) are owned exactly once, by
+# docs/protocols/security-policy.md section 2 or docs/protocols/evaluation-protocol.md. This
+# file does not restate those numbers as defaults: the guardian.token.* fields below are left
+# unset and the templates fail closed (Helm's `required`) exactly as
+# guardian/app/config.py::GuardianConfig fails closed on the same fields at process start.
+# Copy the current values from security-policy.md section 2 into your own values override, the
+# same numbers scripts/security_params.py extracts for the campaign harness.
+#
+# SECRETS. No secret value is ever written here. Every secret is a K8s Secret referenced by
+# name and key only; the Secret objects themselves are created out of band by the operator.
+# The authoritative list of expected Secrets and their rotation is
+# docs/ops/secrets.md (authored under T8.2). The Guardian signing key is the one secret an
+# object in this chart actually mounts (guardian/deploy/deployment.yaml's own contract); the
+# model-provider and Langfuse entries below are carried as a documented, forward-compatible
+# contract only -- see "modelProvider" and "langfuse" comments for why nothing in this chart
+# consumes them yet.
+
+# -----------------------------------------------------------------------------------------
+# Namespaces
+# -----------------------------------------------------------------------------------------
+namespaces:
+  # Names default to the literals guardian/deploy/rbac.yaml, monitor/deploy/namespace.yaml and
+  # infra/netpol/agents-default-deny.yaml already use. Every cross-reference in this chart
+  # (RoleBindings, NetworkPolicy namespaceSelectors, Service DNS names) is templated from
+  # these values, so overriding them keeps the manifests internally consistent.
+  guardian: guardian
+  monitor: monitor
+  agents: agents
+  # NOT created by this chart, on purpose -- infra/boutique/kustomization.yaml deliberately
+  # declines to create it either ("a Namespace declared in this overlay would itself be
+  # stamped into the namespace it defines"), and scripts/up.sh creates it before
+  # guardian/deploy/rbac.yaml is applied. Guardian's namespaced Role/RoleBinding below target
+  # this namespace and will fail to apply -- loudly, on the RoleBinding -- if it does not
+  # already exist. Deploy the target application (infra/boutique, via Kustomize) or otherwise
+  # create this namespace first. See NOTES.txt.
+  boutique: boutique
+  create:
+    guardian: true
+    monitor: true
+    agents: true
+
+# -----------------------------------------------------------------------------------------
+# Guardian -- sole credential holder, deny-by-default reference monitor (guardian/deploy/)
+# -----------------------------------------------------------------------------------------
+guardian:
+  replicas: 1
+
+  # G0-FULL | G1-LOGONLY | G2-SHAREDCRED. This is the ONLY values flag that reaches Guardian's
+  # arm, and it reaches it exactly the way scripts/guardian_deploy.sh already does: as the
+  # GUARDIAN_MODE key of the guardian-runtime ConfigMap, read once at process start by
+  # guardian/app/config.py::_parse_mode. No template in this chart brings a second mode path
+  # into existence, and no Guardian source file is templated, patched or forked. An
+  # unrecognised value here produces a Guardian that refuses to start with a named error
+  # (config.py's fail-closed behavior), not a Guardian that silently runs G0-FULL.
+  mode: G0-FULL
+
+  # The run this Guardian instance is bound to. Blank is a legitimate "development posture"
+  # per guardian/app/config.py (a standing, non-campaign deployment); the runner always sets a
+  # concrete run id for a campaign attempt, which this chart does not drive -- see
+  # docs/adr/ADR-113-helm-chart-packaging.md for why this chart targets the standing/shadow
+  # deployment shape (T8.5) and not the per-attempt campaign harness (scripts/guardian_deploy.sh),
+  # which remains untouched and continues to redeploy Guardian per attempt for the evaluation.
+  runId: ""
+
+  # Comma-separated Supervisor identifiers permitted to have issued a token for this run.
+  # Blank means every token is refused (deny-by-default), which is the correct reading of "no
+  # Supervisor registered" per guardian/app/config.py.
+  registeredIssuers: ""
+
+  # fake | kubernetes. `fake` mediates and executes nothing (see guardian/app/config.py's
+  # ExecutorKind docstring for why it has no default); a real deployment wants `kubernetes`.
+  executor: kubernetes
+
+  token:
+    # REQUIRED. No default: copy the current numbers from docs/protocols/security-policy.md
+    # section 2. Guardian itself refuses to start without them (guardian/app/config.py), and
+    # this chart deliberately does not paper over that with a convenient default, which would
+    # be a second, driftable home for a number that file owns exactly once.
+    ttlSeconds: ~
+    maxTtlSeconds: ~
+    algorithm: ~
+    replayCacheEntries: ~
+    replayCacheWindowSeconds: ~
+
+  policy:
+    # The Rego bundle baked into the Guardian image and the two entrypoints M3-T3.2 named.
+    # Not owned by security-policy.md (they are paths and rule names, not evaluation
+    # parameters), so a concrete default here matches guardian_deploy.sh's own literals.
+    bundlePath: /app/guardian/policies
+    entrypoint: data.guardian.decision
+    issuanceEntrypoint: data.guardian.issuance.decision
+    # A transport-level bound on one local OPA call, not a protocol number (see
+    # guardian/app/config.py's PolicyEngineSettings docstring) -- 2s matches
+    # scripts/guardian_deploy.sh.
+    timeoutSeconds: 2
+
+  # REQUIRED. Must name a path directly under the Guardian's audit volume
+  # (/var/lib/guardian/audit), e.g. /var/lib/guardian/audit/<run-id>-<attempt>.jsonl for a
+  # campaign attempt, or a fixed operator-chosen chain name for a standing shadow/enforce
+  # deployment. scripts/guardian_deploy.sh enforces the run-id-shaped contract for campaign
+  # attempts; this chart does not re-implement that validation; the shadow-mode rollout guide
+  # (T8.3/T8.5) is the place that documents the standing-deployment naming convention.
+  auditLogPath: ~
+  replayStorePath: /var/lib/guardian/audit/guardian_replay.sqlite3
+
+  # Blank uses guardian.app.models.ACTION_REQUEST_MAX_BYTES, exactly as an unset
+  # GUARDIAN_MAX_REQUEST_BYTES does today.
+  maxRequestBytes: ""
+
+  # The token signing key: referenced by name and key only, never created or defaulted here.
+  # guardian/deploy/deployment.yaml's own comment is the rule this mirrors: "operators create
+  # guardian-signing-key out of band." docs/ops/secrets.md is the authoritative contract.
+  signingKey:
+    secretName: guardian-signing-key
+    secretKey: signing-key
+
+  image:
+    # Defaults match infra/versions.env's GUARDIAN_IMAGE=agentic-overwatch/guardian:local,
+    # which is a locally kind-loaded, un-pushed image -- hence pullPolicy Never below, exactly
+    # as guardian/deploy/deployment.yaml sets it. Point repository/tag (or digest) at a
+    # registry-hosted build and set pullPolicy to IfNotPresent/Always for a foreign cluster;
+    # infra/versions.env stays the pin of record for what the frozen v1.0 evaluation ran.
+    repository: agentic-overwatch/guardian
+    tag: local
+    digest: ""
+    pullPolicy: Never
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  audit:
+    # guardian/deploy/deployment.yaml's PersistentVolumeClaim, unparameterized beyond size and
+    # an optional storage class so a foreign cluster's default class is honored.
+    pvcSize: 1Gi
+    storageClassName: ""
+
+  service:
+    port: 8080
+
+# -----------------------------------------------------------------------------------------
+# Monitor -- evidence aggregator + Kubernetes audit forwarder (monitor/deploy/)
+# -----------------------------------------------------------------------------------------
+monitor:
+  image:
+    # Matches infra/versions.env's MONITOR_IMAGE=agentic-overwatch/evidence-aggregator:local.
+    # Both the aggregator and the audit-forwarder Deployments run this one image (different
+    # command), exactly as monitor/deploy/deployment.yaml and audit-forwarder.yaml do today.
+    repository: agentic-overwatch/evidence-aggregator
+    tag: local
+    digest: ""
+    pullPolicy: Never
+
+  aggregator:
+    replicas: 1
+    port: 8080
+    quotingEnabled: true
+    resources: {}
+
+  auditForwarder:
+    replicas: 1
+    severity: high
+
+  service:
+    port: 8080
+
+  # The shared evidence tree both monitor Deployments mount (the aggregator writes it, the
+  # audit-forwarder reads it). Two backing shapes:
+  #   mode: hostPath  (default) -- monitor/deploy/deployment.yaml's hostPath, a kind-development
+  #     convenience (docs/04-repo-conventions.md section 2, OVERWATCH_EVIDENCE_DIR). Byte-for-byte
+  #     parity with the frozen manifests. The path below must ALREADY EXIST on the node (hostPath
+  #     type: Directory), which scripts/up.sh / the kind bring-up creates on the dev profile.
+  #   mode: pvc       -- a PersistentVolumeClaim, for a foreign/multi-node cluster. Removes the
+  #     host-dir prerequisite. See docs/adr/ADR-113-helm-chart-packaging.md.
+  evidence:
+    mode: hostPath
+    # In-container evidence path, mounted at this path by both Deployments. In hostPath mode it is
+    # ALSO the node path bound in; in pvc mode it is only the container mount path.
+    hostPath: /var/lib/overwatch/evidence
+    # Pins the aggregator and audit-forwarder to the control-plane node, matching
+    # monitor/deploy/deployment.yaml's ADR-062 rationale (the real hostPath bind and the
+    # kube-apiserver's own audit file both live there on the kind/WSL2 dev profile). In hostPath
+    # mode leave this on. In pvc mode with a ReadWriteOnce claim the two pods must still share one
+    # node, so this stays on there too by default; set it false only with a ReadWriteMany claim.
+    pinToControlPlane: true
+    # Used only when mode: pvc. The chart creates a PVC named "monitor-evidence" unless
+    # existingClaim names a pre-created one (then the chart creates none). accessMode
+    # ReadWriteOnce keeps both monitor pods on one node (see pinToControlPlane); ReadWriteMany
+    # lets them span nodes if the storage class supports it.
+    pvc:
+      existingClaim: ""
+      storageClassName: ""
+      accessMode: ReadWriteOnce
+      size: 5Gi
+
+# -----------------------------------------------------------------------------------------
+# Agents -- namespace, default-deny network boundary and RBAC only.
+#
+# There is no Deployment here, and that is not an omission: infra/status/components.yaml
+# records the reason explicitly -- "Executors are ephemeral by construction... the
+# Orchestrator and Supervisors are a graph the runner drives for the duration of a run, not a
+# workload standing in a namespace between runs." The frozen v1.0 artifact has no in-cluster
+# agents workload for this chart to templatize; what exists, and what this chart packages, is
+# the namespace boundary the (host-driven) agent layer runs inside of.
+# -----------------------------------------------------------------------------------------
+agents:
+  # Reserved values for a model-provider credential and a model alias, carried here as a
+  # documented contract and NOT wired into any template: the only current consumer
+  # (agents/registry/model.py's LiteLLM client, via OPENAI_API_KEY/OPENAI_BASE_URL) runs on
+  # the host under the runner, not as a cluster workload -- see agents/README.md. Name, namespace
+  # and keys match the chart-facing contract docs/ops/secrets.md section 3 fixes (authored under
+  # T8.2), so a future in-cluster agent workload's secretKeyRef can consume this Secret with no
+  # rename. Wiring it into a real Deployment is future work for the milestone that first
+  # containerizes the agent graph; docs/ops/secrets.md is the authoritative name/key list.
+  modelAlias: overwatch-primary
+  modelProvider:
+    secretName: overwatch-model-provider-credential
+    apiKeySecretKey: api-key
+    baseUrlSecretKey: base-url
+
+  # Whether the chart manages the agents-namespace `default` ServiceAccount (turning its token
+  # automounting off, defence in depth). Default true, matching infra/netpol/agents-default-deny.yaml.
+  # Kubernetes auto-creates that SA with every namespace, so a re-install into a namespace a prior
+  # release left behind collides ("default ... exists and cannot be imported"). Set false to skip
+  # managing it -- the automount-off then becomes a one-line manual patch (docs/ops/runbook.md
+  # section 5.6). First-install and in-place `helm upgrade` are unaffected either way.
+  manageDefaultServiceAccount: true
+
+  networkPolicy:
+    # closed matches infra/netpol/agents-default-deny.yaml (deny egress to the API server, the
+    # default arm posture G0-FULL/G1-LOGONLY both use). open matches
+    # infra/netpol/agents-g2-open.yaml (the G2-SHAREDCRED arm's one-object delta). This is
+    # deliberately a separate toggle from guardian.mode, exactly as the two source files are
+    # two separate objects the operator chooses between -- set both together for a coherent
+    # G2-SHAREDCRED deployment.
+    apiServerReach: closed
+
+  # G2-SHAREDCRED's scoped alternate identity (source: guardian/deploy/g2-rbac.yaml -- the
+  # ServiceAccount is agent-namespace-scoped even though the file sits under guardian/deploy/).
+  # Off by default; the token itself is still requested out of band by the runner/operator
+  # kubeconfig (ADR-024), never minted or stored by this chart.
+  g2:
+    enabled: false
+
+# -----------------------------------------------------------------------------------------
+# Pod Security Standards labels, matching guardian/deploy/rbac.yaml and
+# infra/netpol/agents-default-deny.yaml exactly (baseline enforce, restricted warn/audit).
+# -----------------------------------------------------------------------------------------
+podSecurityStandards:
+  enforce: baseline
+  warn: restricted
+  audit: restricted
+
+commonLabels:
+  app.kubernetes.io/part-of: agentic-overwatch

@@ -1,0 +1,28 @@
+{{- if and (eq .Values.monitor.evidence.mode "pvc") (not .Values.monitor.evidence.pvc.existingClaim) }}
+# Evidence PersistentVolumeClaim for a foreign/multi-node cluster (values monitor.evidence.mode:
+# pvc). This has NO source manifest under monitor/deploy/ -- the frozen v1.0 artifact runs the
+# hostPath shape on kind/WSL2 (ADR-062); this is the M8 packaging alternative for a cluster whose
+# storage is not node-local, and it is created only in pvc mode. Both the evidence-aggregator and
+# the audit-forwarder Deployments mount volume "evidence" (backed by this claim) at
+# monitor.evidence.hostPath. A ReadWriteOnce claim requires those two pods to share one node --
+# keep monitor.evidence.pinToControlPlane true, or set accessMode ReadWriteMany with a storage
+# class that supports it. Not created when monitor.evidence.pvc.existingClaim names a pre-created
+# claim. See docs/adr/ADR-113-helm-chart-packaging.md.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: monitor-evidence
+  namespace: {{ .Values.namespaces.monitor }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: monitor
+spec:
+  accessModes:
+    - {{ .Values.monitor.evidence.pvc.accessMode }}
+  {{- with .Values.monitor.evidence.pvc.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.monitor.evidence.pvc.size }}
+{{- end }}

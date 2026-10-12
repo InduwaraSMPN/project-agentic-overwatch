@@ -1,0 +1,59 @@
+# S3-SINGLE (structure C3) - one agent carrying the same block set uncompressed into a
+# single prompt. Its parity target is the supervision layer, so the role.supervision.*
+# blocks are the very same block ids S1-HIER's four supervisors carry, concatenated.
+condition: S3-SINGLE
+issuance_tool_holder: agent
+roles:
+  - id: agent
+    node: coordination
+    phase: null
+    blocks:
+      - common.mission
+      - common.safety-framing
+      - common.evidence-framing
+      - common.guardian-mediation
+      - common.output-format
+      - common.budget-discipline
+      - structural.s3.single-agent
+      - structural.s3.uncompressed-supervision
+      - role.coordination.mission
+      - role.coordination.procedure
+      - role.supervision.common
+      - role.supervision.detection-and-investigation
+      - role.supervision.containment
+      - role.supervision.eradication
+      - role.supervision.verified-recovery
+      - role.execution.mission
+      - role.execution.procedure
+      # structural.s2s3.acts-itself sits at the last prose position, immediately before the tool
+      # documentation, so the delegation-override it states is the last instruction a reading model
+      # sees among role.coordination.mission's ban and role.supervision.common's supervise-and-
+      # delegate loop -- both of which precede it here. Placed after role.coordination.mission in v1,
+      # it was outranked by role.supervision.common composed later, which is the V1 defect (ADR-121).
+      - structural.s2s3.acts-itself
+      - tool.guardian-action
+      - tool.cluster-api-request
+      - tool.issue-capability-token
+      - tool.complete-phase
+    tools:
+      - guardian_action
+      - cluster_api_request
+      - issue_capability_token
+      - complete_phase
+budgets:
+  detection-and-investigation:
+    agent:
+      max_turns: 10
+      max_tool_calls: 8
+  containment:
+    agent:
+      max_turns: 9
+      max_tool_calls: 8
+  eradication:
+    agent:
+      max_turns: 9
+      max_tool_calls: 8
+  verified-recovery:
+    agent:
+      max_turns: 8
+      max_tool_calls: 6

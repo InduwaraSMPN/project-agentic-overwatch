@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ScenarioManifest",
+  "description": "One scenario, as scenarios/manifests/<scenario_id>.yaml declares it. The manifest is what a scenario IS; scenarios/groundtruth/<scenario_id>.yaml is what a correct response to it looks like, and the two are separate files so the sha256 a run bundle pins over the labels does not move when a teardown step is reworded. Fields are `origin: engineering`: section 3.5.6 of the submitted chapters fixes the scenario count and the phase-coverage constraint and names no individual scenario, so the identities, the CVE/SIM split and this schema are kit engineering (conflict M5-C2, ADR-034).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "class",
+    "title",
+    "summary",
+    "origin",
+    "namespace",
+    "load_profile_id",
+    "first_signal_source",
+    "groundtruth_ref",
+    "phase_coverage",
+    "injection_points",
+    "incident_primitives",
+    "teardown"
+  ],
+  "properties": {
+    "schema_version": { "const": "v1" },
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^SCN-(CVE|SIM)-[0-9]{2}$"
+    },
+    "class": {
+      "description": "CVE is section 3.5.6's real-CVE injection, carrying the demonstration area's ecological grounding. SIM is its structured, seeded scenario simulation, carrying the controlled manipulation the rigorous ablations require. The split is about provenance, not grid position: every scenario runs in every arm under every injection condition at every seed.",
+      "enum": ["CVE", "SIM"]
+    },
+    "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 600 },
+    "origin": {
+      "description": "Pinned to `engineering` by the schema rather than left to an author. \"Ground truth\" has zero occurrences in the submitted chapters and no scenario is named there, so a manifest that could declare itself dissertation-derived would be able to assert something untrue.",
+      "const": "engineering"
+    },
+    "namespace": {
+      "description": "The Kubernetes namespace the scenario acts in. Bounds what the applier may touch and is the outer bound the ground truth's blast_radius is read inside.",
+      "type": "string",
+      "minLength": 1
+    },
+    "load_profile_id": {
+      "description": "Resolves against infra/locust/profiles.yaml (ADR-015). The registry owns the values; this field only names one.",
+      "type": "string",
+      "pattern": "^LOAD-[A-Z0-9]+(-[A-Z0-9]+)*$"
+    },
+    "first_signal_source": {
+      "description": "Which of FR1.1's four Monitor sources carries this scenario's FIRST evidence. Kit-chosen constraint (section D12): each of the four is the first signal for at least one scenario, so the campaign exercises Prometheus and Trivy as detection surfaces rather than only as ingestion paths -- which is also what gives matrix row T-41's open question a run to be answered against.",
+      "enum": ["falco", "prometheus", "k8s_audit", "trivy"]
+    },
+    "groundtruth_ref": {
+      "description": "Path, repository-relative, to this scenario's label file. Resolved by test, not by convention.",
+      "type": "string",
+      "pattern": "^scenarios/groundtruth/SCN-(CVE|SIM)-[0-9]{2}\\.yaml$"
+    },
+    "phase_coverage": {
+      "description": "All four of the phases evaluation-protocol section 3 fixes, each declared. Exactly four required keys and no others, because section 3.5.6's constraint -- the suite \"is designed to exercise all four operational phases\" -- is unevaluable on a scenario that declares three, and full-lifecycle proportion (phases completed / 4) is undefined on it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "detection-and-investigation",
+        "containment",
+        "eradication",
+        "verified-recovery"
+      ],
+      "properties": {
+        "detection-and-investigation": { "$ref": "#/$defs/phaseDeclaration" },
+        "containment": { "$ref": "#/$defs/phaseDeclaration" },
+        "eradication": { "$ref": "#/$defs/phaseDeclaration" },
+        "verified-recovery": { "$ref": "#/$defs/phaseDeclaration" }
+      }
+    },
+    "injection_points": {
+      "description": "Where each of the four classes reaches this scenario. INJ-NONE takes no entry: it has no injection point, which is the whole of what distinguishes it from INJ-A..INJ-D.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["INJ-A", "INJ-B", "INJ-C", "INJ-D"],
+      "properties": {
+        "INJ-A": { "$ref": "#/$defs/injectionPoint" },
+        "INJ-B": { "$ref": "#/$defs/injectionPoint" },
+        "INJ-C": { "$ref": "#/$defs/injectionPoint" },
+        "INJ-D": { "$ref": "#/$defs/injectionPoint" }
+      }
+    },
+    "incident_primitives": {
+      "description": "The Chaos Mesh CRDs, CVE images and attacker steps that make up the INCIDENT -- what fires under every injection condition, INJ-NONE included. One planned event per entry, in this order: a scenario needing a step twice declares it twice, which is what keeps the planned event count a property of the manifest rather than of the planner. The four injection deliveries are declared separately under injection_points, so an injection condition adds exactly one event to this count and never reorders these.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/primitive" }
+    },
+    "teardown": {
+      "description": "Ordered steps that return the environment to its pre-scenario state. Authored at M5; applied at Tier B, when a cluster exists. A scenario whose teardown is incomplete leaks state into the next run in the campaign order, which no per-run check would attribute to it.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/teardownStep" }
+    }
+  },
+  "$defs": {
+    "phaseDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected", "surface"],
+      "properties": {
+        "expected": {
+          "description": "What a correct response does in this phase, in one sentence. Prose here; the machine-readable terminal outcome and required sub-steps are the ground truth's.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "surface": {
+          "description": "What the agent layer reads or acts on in this phase.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "injectionPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primitive_id", "mechanism", "surface", "content_pool", "target"],
+      "properties": {
+        "primitive_id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+        "mechanism": { "enum": ["chaosmesh", "cve", "attacker", "workload"] },
+        "surface": {
+          "description": "The concrete field, stream or call the adversarial content reaches. For INJ-B this names the Monitor source field carrying attacker-controlled text, which is the same field G3-UNQUOTED stops quoting.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "content_pool": {
+          "description": "The pool id under scenarios/attackers/content/ this class draws its payload instances from.",
+          "type": "string",
+          "pattern": "^INJ-[A-D]-pool-[0-9]{2}$"
+        },
+        "target": { "$ref": "#/$defs/target" }
+      }
+    },
+    "primitive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primitive_id", "mechanism", "ref", "target", "description"],
+      "properties": {
+        "primitive_id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+        "mechanism": { "enum": ["chaosmesh", "cve", "attacker", "workload"] },
+        "ref": {
+          "description": "Repository-relative path for a chaosmesh CRD or an attacker step; an images.yaml entry id for a cve primitive.",
+          "type": "string",
+          "minLength": 1
+        },
+        "target": { "$ref": "#/$defs/target" },
+        "description": { "type": "string", "minLength": 1, "maxLength": 300 }
+      }
+    },
+    "target": {
+      "description": "What a primitive acts on. `replicas` is how many identical replicas the workload runs, and it is what section D13's \"the target replica among identical ones\" is drawn from: the planner draws an index in [0, replicas) from the seeded generator, so two seeds hit different replicas of the same workload and one seed always hits the same one. A workload running a single replica declares 1 and the drawn index is always 0. This value must equal the count that infra/boutique/kustomization.yaml actually deploys for that workload -- ADR-061 fixes those counts, and a manifest declaring more than are deployed draws indices at pods that do not exist. The schema cannot check that, because it cannot see the overlay; the two are held together by ADR-061 and by review.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workload", "container", "replicas"],
+      "properties": {
+        "workload": { "type": "string", "minLength": 1 },
+        "container": { "type": ["string", "null"] },
+        "replicas": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "teardownStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["order", "action", "ref"],
+      "properties": {
+        "order": { "type": "integer", "minimum": 1 },
+        "action": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "ref": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

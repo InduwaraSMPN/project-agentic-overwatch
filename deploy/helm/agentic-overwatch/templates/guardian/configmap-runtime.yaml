@@ -1,0 +1,32 @@
+# Templated equivalent of the `guardian-runtime` ConfigMap scripts/guardian_deploy.sh creates
+# with `kubectl create configmap ... --from-literal=...` on every deploy. Same keys, same
+# guardian/app/config.py env-var contract; this is the ONE path GUARDIAN_MODE reaches the
+# process by (values.yaml guardian.mode -> this ConfigMap -> guardian/deploy/deployment.yaml's
+# envFrom), never a code or policy edit -- see .agents/rules/10-guardian-first.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: guardian-runtime
+  namespace: {{ .Values.namespaces.guardian }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: guardian
+data:
+  GUARDIAN_MODE: {{ .Values.guardian.mode | quote }}
+  GUARDIAN_RUN_ID: {{ .Values.guardian.runId | quote }}
+  GUARDIAN_REGISTERED_ISSUERS: {{ .Values.guardian.registeredIssuers | quote }}
+  GUARDIAN_TOKEN_TTL_SECONDS: {{ required "guardian.token.ttlSeconds is required -- copy the current value from docs/protocols/security-policy.md section 2" .Values.guardian.token.ttlSeconds | quote }}
+  GUARDIAN_TOKEN_MAX_TTL_SECONDS: {{ required "guardian.token.maxTtlSeconds is required -- docs/protocols/security-policy.md section 2" .Values.guardian.token.maxTtlSeconds | quote }}
+  GUARDIAN_TOKEN_ALGORITHM: {{ required "guardian.token.algorithm is required -- docs/protocols/security-policy.md section 2" .Values.guardian.token.algorithm | quote }}
+  GUARDIAN_REPLAY_CACHE_ENTRIES: {{ required "guardian.token.replayCacheEntries is required -- docs/protocols/security-policy.md section 2" .Values.guardian.token.replayCacheEntries | quote }}
+  GUARDIAN_REPLAY_CACHE_WINDOW_SECONDS: {{ required "guardian.token.replayCacheWindowSeconds is required -- docs/protocols/security-policy.md section 2" .Values.guardian.token.replayCacheWindowSeconds | quote }}
+  GUARDIAN_POLICY_BUNDLE_PATH: {{ .Values.guardian.policy.bundlePath | quote }}
+  GUARDIAN_POLICY_ENTRYPOINT: {{ .Values.guardian.policy.entrypoint | quote }}
+  GUARDIAN_ISSUANCE_ENTRYPOINT: {{ .Values.guardian.policy.issuanceEntrypoint | quote }}
+  GUARDIAN_POLICY_TIMEOUT_SECONDS: {{ .Values.guardian.policy.timeoutSeconds | quote }}
+  GUARDIAN_AUDIT_LOG_PATH: {{ required "guardian.auditLogPath is required -- see values.yaml guardian.auditLogPath and the shadow-mode rollout guide (T8.3/T8.5)" .Values.guardian.auditLogPath | quote }}
+  GUARDIAN_REPLAY_STORE_PATH: {{ .Values.guardian.replayStorePath | quote }}
+  GUARDIAN_EXECUTOR: {{ .Values.guardian.executor | quote }}
+  {{- if .Values.guardian.maxRequestBytes }}
+  GUARDIAN_MAX_REQUEST_BYTES: {{ .Values.guardian.maxRequestBytes | quote }}
+  {{- end }}

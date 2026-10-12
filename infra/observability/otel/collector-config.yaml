@@ -1,0 +1,105 @@
+# infra/observability/otel/collector-config.yaml -- the OpenTelemetry Collector pipeline that
+# carries agent spans from the framework to the Langfuse trace plane.
+#
+# Image and version: otel/opentelemetry-collector-contrib at OTEL_COLLECTOR_VERSION in
+# infra/versions.env. The contrib distribution rather than the core one, because core ships no OTLP
+# exporter with the header handling this pipeline needs; the pin lives in versions.env like every
+# other, and nothing in this file restates it.
+#
+# WHO SENDS INTO THIS, AND WHO DOES NOT
+#   The agent layer's OpenTelemetry SDK, pinned by OTEL_PYTHON_SDK_VERSION. This is the Tier B path
+#   only: Tier A configures the same SDK with a file exporter and runs the whole offline half of M4
+#   with no collector and no network, which is why nothing about the parity gate, the graphs or the
+#   registries depends on anything in this directory. See ../otel/README.md.
+#
+#   Nothing under monitor/ ever appears here. .agents/rules/40-monitor-non-llm.md types the Monitor
+#   deterministic and non-LLM, and its evidence path is the aggregator's own event stream, not a
+#   span pipeline.
+#
+# WHY A COLLECTOR AT ALL, RATHER THAN THE SDK EXPORTING STRAIGHT TO LANGFUSE
+#   Three things it buys that a direct exporter does not, all of them at Tier B where a run is a
+#   cluster and a campaign rather than one process:
+#     - The Langfuse credential lives in one place. Every emitting process points at the collector
+#       over plain OTLP and holds no key; only this hop authenticates.
+#     - Batching happens outside the measured process. An agent process that blocked on an HTTP
+#       round trip per span would be paying observation cost inside the latency RQ3 reports.
+#     - The endpoint can move -- a restarted Langfuse, a switch between local and remote -- without
+#       redeploying anything that emits.
+#
+# EVERY BLOCK BELOW IS COMMENTED, because a collector configuration is the kind of file that is
+# copied once and then never re-read, and an undocumented processor is indistinguishable from a
+# default nobody chose.
+
+receivers:
+  # OTLP is the only receiver. The framework emits OTLP and nothing else does, so a second receiver
+  # would be a surface accepting traffic no component in this repository sends -- the same argument
+  # infra/observability/install.sh makes for not installing components nothing reads.
+  otlp:
+    protocols:
+      # gRPC on 4317 and HTTP on 4318, the two OTLP defaults. Both are enabled because the Python
+      # SDK's exporter choice is a per-process decision -- the agents use OTLP/HTTP, which is what
+      # OTEL_PYTHON_SDK_VERSION's opentelemetry-exporter-otlp-proto-http provides -- while a future
+      # sidecar or a debugging emitter may reasonably prefer gRPC. Both bind to localhost only: this
+      # collector runs beside the trace plane on the development host, not in the cluster, and an
+      # endpoint that accepts unauthenticated spans from any interface is not one to expose.
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  # Batch, and only batch. The pipeline deliberately holds no sampler, no filter and no attribute
+  # processor: a span dropped or rewritten between the framework and the trace is a span the
+  # dissertation cannot account for, and RQ3's per-phase latency and token attribution are read off
+  # these traces. Whatever the framework emitted is what Langfuse receives.
+  batch:
+    # Flush at whichever comes first. The timeout is what bounds staleness during the quiet stretch
+    # between two phases of a run, when a size-only trigger could hold the last spans of a phase
+    # until the next one started and make a phase boundary look later than it was.
+    timeout: 5s
+    send_batch_size: 512
+    # A hard ceiling, so a burst -- a retry storm, a verbose Executor -- is split into several
+    # requests rather than becoming one payload Langfuse rejects whole.
+    send_batch_max_size: 1024
+
+exporters:
+  # OTLP over HTTP to Langfuse's own OTLP endpoint. HTTP rather than gRPC because that is the
+  # protocol Langfuse v3 exposes at /api/public/otel.
+  otlphttp/langfuse:
+    # Both values come from the environment, never from this file. The endpoint is a host address
+    # that differs between a local Compose stack and anything else, and the header carries a
+    # credential, which .gitignore and AGENTS.md iron rule 4 keep out of the repository entirely.
+    # LANGFUSE_OTLP_AUTH is base64("<public key>:<secret key>") for the project the run belongs to,
+    # issued in the Langfuse UI and stored in the repository-root .env.
+    endpoint: ${env:LANGFUSE_OTLP_ENDPOINT}
+    headers:
+      Authorization: "Basic ${env:LANGFUSE_OTLP_AUTH}"
+    # Retry rather than drop. A trace plane restart during a run must not cost the run's spans, and
+    # the queue below is what carries them across it. The queue is bounded on purpose: unbounded,
+    # a Langfuse that stayed down would grow the collector's memory until the host noticed instead
+    # of the operator.
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+
+service:
+  # One pipeline, traces only. No metrics pipeline: cluster and application metrics are Prometheus's
+  # job in this project (ADR-013, and the three releases infra/observability/install.sh puts in the
+  # cluster), and duplicating that path here would give two sources for one number. No logs
+  # pipeline: the Monitor owns evidence, and its stream is not spans.
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/langfuse]
+  telemetry:
+    logs:
+      # info, not debug. A collector logging every batch would bury the one message that matters --
+      # an export failure -- in a log nobody reads.
+      level: info

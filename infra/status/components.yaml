@@ -1,0 +1,346 @@
+# infra/status/components.yaml -- the declared component set that `make status` reports over.
+#
+# WHY THIS FILE EXISTS
+# docs/04-repo-conventions.md section 3 contracts `make status` as a "cluster, app, monitor,
+# guardian health summary". At M1 there is no Monitor -- it lands at M2 -- and no Guardian, which
+# lands at M3. A status implementation written against the M1 tree would therefore check two of
+# the four things that contract names and print PASS, and it would keep printing PASS after M2 and
+# M3 landed unless somebody remembered to go back and extend it.
+#
+# That is not a cosmetic gap. docs/protocols/evaluation-protocol.md section 5 rule 1 makes a green
+# `make status` the preflight gate for every single run, so a status check that silently omits a
+# component it was never taught about would still report green at M7 with the Guardian down, and
+# an entire campaign would be recorded against an environment nobody actually verified. The
+# failure would be invisible in the logs, because the omission and the all-clear are the same
+# bytes.
+#
+# So the component set is declared here as data rather than compiled into scripts/status.sh, and
+# every component carries both the milestone that owns it and an explicit landed state. A component
+# with `landed: false` prints `not-deployed (M2)` and does not fail the check. A component with
+# `landed: true` is required and fails when its owner path or workload is absent or unhealthy. The
+# report is total at every point in time: nothing is missing because it does not exist yet, and
+# nothing drops out once its deployment lands. ADR-044 records why milestone workflow status is not
+# deployment state.
+#
+# WHAT THE M2 AND M3 ROWS AT THE BOTTOM ARE, AND ARE NOT
+# They are placeholders, not finished rows. M2 and M3 add their real check specifications in their
+# own milestones -- that is what the milestone column is for, and neither milestone is blocked on
+# anything written here. What the placeholders buy is that from M1 onward an operator reading
+# `make status` sees Falco, the evidence aggregator and the Guardian named and reported as absent,
+# instead of seeing a list that happens not to mention them. A missing line is not evidence of
+# anything; a line reading `not-deployed (M3)` is.
+#
+# The placeholders carry `"?"` in the fields whose values only the owning milestone can know, and
+# scripts/status.sh skips a row while `landed: false`. The change that authors its deployable
+# workload must atomically set `landed: true`, fill the `"?"` fields and name the concrete owner;
+# a landed row with a placeholder or absent owner is a FAILURE naming this file.
+#
+# REJECTED: hardcoding the M1 component set inside scripts/status.sh. M2 and M3 would each have to
+# remember to extend the script, and a forgotten extension makes the preflight gate pass
+# vacuously -- exactly the defect the M0 audit found in scripts/check_hygiene.sh's EOL sweep,
+# where a derived candidate list made "checked nothing" byte-identical to "checked everything".
+#
+# SCHEMA
+# A single top-level `components:` key holding a flat sequence of mappings. Every mapping is one
+# component and every value is a plain scalar. There is no nesting below the mapping, no
+# multi-line scalar and no anchor or alias anywhere in the file, because scripts/status.sh and
+# scripts/up.sh read it with awk rather than with a YAML parser: WSL2 Ubuntu's dash has no YAML
+# library, `jq` is not installed in the distro, and making the shell path of `make up` depend on a
+# Python interpreter would make the bring-up depend on the environment it exists to bring up. The
+# file is nevertheless valid YAML, and infra/tests/ may parse it as such; the awk contract is the
+# stricter of the two, so satisfying it satisfies both.
+#
+# Field by field:
+#
+#   id           Stable, unique, lowercase-with-hyphens. It is the label the status report prints,
+#                and it is the lookup key scripts/up.sh uses to resolve a layer's namespace and
+#                readiness floor. Renaming an id is a breaking change to both scripts.
+#   description  One line of prose for a human reading the report. It must not contain a colon
+#                followed by a space, and must not contain a hash character, so that the awk
+#                reader's split-on-the-first-colon stays unambiguous without a quoting rule.
+#   milestone    The milestone that owns this component -- M1, M2 or M3 today. It labels a
+#                `not-deployed (M2)` result; milestone workflow status does not activate the row.
+#   landed       Explicit deployment state, exactly `true` or `false`. The commit that introduces
+#                the deployable workload flips it true and completes the row (ADR-044).
+#   kind         The check scripts/status.sh runs: `nodes`, `deployment`, `daemonset` or
+#                `statefulset`. An unrecognised value is a failure, never a skip.
+#   namespace    The Kubernetes namespace holding the object, `"-"` for a cluster-scoped check
+#                (`nodes`), or `"?"` for a placeholder row whose milestone has not declared one.
+#   name         The object name, `"@all"` for every object of that kind in the namespace, `"-"`
+#                for a cluster-scoped check, or `"?"` for an undeclared placeholder.
+#   min_count    The minimum number of healthy objects the check requires. It exists to stop an
+#                `"@all"` sweep passing over an empty namespace, which is the same vacuous-pass
+#                shape the header rejects above. For a DaemonSet it is a floor on ready pods.
+#   owner        The repository path for this component's deploy surface. For `landed: true` it
+#                must exist or status fails closed. It must name something the milestone actually
+#                creates, never a README or source directory that precedes deployment.
+#   required_in  OPTIONAL. A comma-separated list of the bring-up profiles in which this component
+#                is REQUIRED, no spaces. ABSENT MEANS EVERY PROFILE, which is the fail-closed
+#                reading: an omitted key can only ever add a requirement, never drop one, so it
+#                cannot cause the silent-omission defect this file exists to prevent. A value
+#                naming a profile `scripts/up.sh` does not know is a FAILURE, never a skip -- the
+#                same posture `kind` takes. See the PROFILES paragraph below.
+#
+# PROFILES
+# `scripts/up.sh` and `scripts/status.sh` both read UP_PROFILE (default `full`). The profile names
+# what the environment can supply. `full` is every component. `substrate` omits the components whose
+# deployment needs operator-supplied material that no ephemeral machine has: today that is the
+# Guardian alone, whose `guardian-signing-key` is operator-supplied out of band and which ADR-114
+# forbids any path in this repository from creating. The profile exists so `.github/workflows/
+# env-bringup.yml` -- a fresh-clone proof of the SUBSTRATE, which is what its own header claims --
+# can go green without the Guardian, and so a green there is never mistaken for a green over the
+# whole environment. A campaign or pilot run must never use it: `make status` with the default
+# profile is the preflight gate evaluation-protocol section 5 rule 1 fixes, and the Guardian is
+# exactly the component that gate must see.
+#
+# QUOTING
+# `"-"`, `"?"` and `"@all"` are quoted because YAML gives all three special meaning at the start
+# of a plain scalar. The awk reader strips one leading and one trailing double quote, so quoting
+# any other value is harmless and never required.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+# Deleting a row removes a component from the run-gating preflight silently -- there is no second
+# place that would notice. Lowering a `min_count` weakens the anti-vacuity floor. Changing a
+# `namespace` or `name` so that it no longer matches the manifests that create the object turns a
+# healthy environment into a red `make status`; changing it the other way, to match an object that
+# is not the component, turns a broken environment into a green one. Any of those four edits
+# belongs in the same commit as the manifest change that motivates it.
+#
+# WHERE THE VALUES BELOW CAME FROM
+# T1.6 authors none of the manifests these rows point at; T1.1, T1.2 and T1.3 do. The namespaces,
+# object names and counts below are this file's declaration of where those tasks put things, taken
+# from docs/plans/M1-implementation-plan.md. Where a task's manifest disagrees with a row, the row
+# is what `make up` waits on and what `make status` checks, so the two are reconciled here in the
+# commit that lands the manifest -- and the mismatch is loud rather than silent, because both
+# scripts print the exact object they looked for.
+
+components:
+
+  # --- M1 - cluster substrate (T1.1) -----------------------------------------------------------
+  # min_count is 2 because the M1 plan fixes a two-node cluster, one control-plane and one worker,
+  # so that scripts/netpol_proof.sh can run its denial both same-node and cross-node. If the
+  # ADR-001 fallback to a single node is ever taken, this floor moves in that same commit.
+  - id: cluster-nodes
+    description: The kind cluster nodes, one control-plane and one worker
+    milestone: M1
+    landed: true
+    kind: nodes
+    namespace: "-"
+    name: "-"
+    min_count: 2
+    owner: infra/kind-config.yaml
+
+  # This row checks the Cilium agent DaemonSet, which is the datapath and the NetworkPolicy
+  # enforcement point. It deliberately does not add a second row for cilium-operator, which would
+  # report the same outage twice in the common case; the deep check on the datapath is
+  # scripts/netpol_proof.sh, which proves enforcement rather than liveness.
+  - id: cilium
+    description: The Cilium agent DaemonSet, sole CNI and the NetworkPolicy enforcement point
+    milestone: M1
+    landed: true
+    kind: daemonset
+    namespace: kube-system
+    name: cilium
+    min_count: 1
+    owner: infra/cilium/install.sh
+
+  # --- M1 - target application (T1.2) ----------------------------------------------------------
+  # "@all" rather than eleven rows, because the eleven names belong to the upstream project and
+  # duplicating them here would put a second, staler copy of the service list beside the overlay
+  # that actually deploys it. min_count 11 is the upstream Online Boutique service count of twelve
+  # minus the bundled loadgenerator, which infra/boutique removes so that no uncontrolled
+  # background traffic corrupts the RQ4 interference measure. If the overlay's service set
+  # changes, this floor changes with it in the same commit.
+  - id: boutique-services
+    description: Every Online Boutique microservice Deployment in the target namespace
+    milestone: M1
+    landed: true
+    kind: deployment
+    namespace: boutique
+    name: "@all"
+    min_count: 11
+    owner: infra/boutique/kustomization.yaml
+
+  # Locust is declared in a namespace of its own rather than alongside the application, for two
+  # reasons that both bite later. The "@all" sweep above would otherwise count the load generator
+  # as an application service, so its floor of eleven could be met with only ten Boutique services
+  # running. And the resource collector labels every series app, framework or platform; a load
+  # generator sharing the application namespace turns that classification from a namespace lookup
+  # into a judgement call.
+  # --- M5 - experiment injection controller ----------------------------------------------------
+  - id: chaos-mesh
+    description: Chaos Mesh controller manager for experimenter-controlled fault injection
+    milestone: M5
+    landed: true
+    kind: deployment
+    namespace: chaos-mesh
+    name: chaos-controller-manager
+    min_count: 1
+    owner: infra/chaosmesh/install.sh
+
+  - id: locust
+    description: The Locust load generator, deployed idle and driven per run
+    milestone: M1
+    landed: true
+    kind: deployment
+    namespace: locust
+    name: locust
+    min_count: 1
+    owner: infra/locust/deployment.yaml
+
+  # --- M1 - observability (T1.3) ---------------------------------------------------------------
+  # Three separately pinned charts rather than one umbrella chart, per the M1 plan and ADR-013, so
+  # three rows. The names below are the workload names those three releases produce. node-exporter
+  # ships inside the Prometheus chart, takes no versions.env key of its own, and gets no row of
+  # its own for the same reason.
+  - id: prometheus
+    description: The Prometheus server scraping the cluster and the application
+    milestone: M1
+    landed: true
+    kind: deployment
+    namespace: observability
+    name: prometheus-server
+    min_count: 1
+    owner: infra/observability/install.sh
+
+  # Not decoration. kube_pod_container_status_restarts_total is the only source for the container
+  # restart column that docs/protocols/data-management.md section 3 requires resources.csv to
+  # carry, so a silently absent kube-state-metrics costs a required column in every run bundle.
+  - id: kube-state-metrics
+    description: kube-state-metrics, the source of the container restart series in resources.csv
+    milestone: M1
+    landed: true
+    kind: deployment
+    namespace: observability
+    name: kube-state-metrics
+    min_count: 1
+    owner: infra/observability/install.sh
+
+  - id: grafana
+    description: Grafana, the dashboard front end over the Prometheus datasource
+    milestone: M1
+    landed: true
+    kind: deployment
+    namespace: observability
+    name: grafana
+    min_count: 1
+    owner: infra/observability/install.sh
+
+  # --- M2 - Monitor -----------------------------------------------------------------------------
+  - id: falco
+    description: The Falco runtime security agent supplying the syscall signal family
+    milestone: M2
+    landed: true
+    kind: daemonset
+    namespace: monitor
+    name: falco
+    min_count: 1
+    owner: infra/monitor/install.sh
+
+  - id: falcosidekick
+    description: Falcosidekick forwarding Falco findings to the evidence aggregator
+    milestone: M2
+    landed: true
+    kind: deployment
+    namespace: monitor
+    name: falco-falcosidekick
+    min_count: 1
+    owner: infra/monitor/install.sh
+
+  - id: alertmanager
+    description: Alertmanager forwarding Prometheus alerts to the evidence aggregator
+    milestone: M2
+    landed: true
+    kind: statefulset
+    namespace: observability
+    name: alertmanager
+    min_count: 1
+    owner: infra/monitor/install.sh
+
+  - id: evidence-aggregator
+    description: The evidence aggregator emitting bounded schema-valid EvidenceEvents
+    milestone: M2
+    landed: true
+    kind: deployment
+    namespace: monitor
+    name: evidence-aggregator
+    min_count: 1
+    owner: monitor/deploy/kustomization.yaml
+
+  # --- M3 - Guardian (placeholder, filled by M3) -----------------------------------------------
+  # This is the row the whole file exists for. The Guardian is the sole credential holder and the
+  # deny-by-default reference monitor, so a campaign run with the Guardian down is not a degraded
+  # run of this system, it is a run of a different one. owner is guardian/deploy, the directory
+  # the M3 plan creates for the ServiceAccount and its least-privilege Role.
+  #
+  # M4 LOOKED AT THIS ROW AND LEFT IT AS A PLACEHOLDER, WHICH IS A DECISION, NOT AN OVERSIGHT.
+  # M4 is the milestone that first runs a real Guardian process, so it is the obvious candidate to
+  # fill the two "?" fields -- and it cannot, honestly. What M4 assembles is the composition root:
+  # a Guardian the agent layer reaches in-process through an ASGI app at Tier A, and as a local
+  # process at Tier A'. Neither is a Kubernetes Deployment, and guardian/deploy/ still holds exactly
+  # one file, rbac.yaml -- the ServiceAccount and least-privilege Role -- with no Deployment
+  # manifest beside it. A namespace and a name written here would therefore name an object no file
+  # in this repository creates, which is one of the four edits the WHAT BREAKS paragraph above
+  # names: it turns a healthy environment red, or a broken one green, depending on which way the
+  # guess falls.
+  #
+  # So the row stays explicitly unlanded. As long as no in-cluster deploy surface exists, the
+  # honest report is that this component is not deployed. The milestone that authors the Deployment
+  # must flip `landed`, replace the owner and fill namespace/name in that same change.
+  #
+  # THIS ROW IS ALSO THE ONE `required_in`, AND THE REASON THE FIELD EXISTS. scripts/guardian_deploy.sh
+  # refuses to deploy without `guardian-signing-key`, and ADR-114 forbids any chart value, ESO
+  # ExternalSecret or installer script in this repository from creating, generating or syncing it:
+  # the operator supplies it out of band, which an ephemeral CI runner cannot. So the Guardian is
+  # required in the `full` profile -- every campaign and pilot bring-up, and every `make status`
+  # that gates a run -- and absent from `substrate`, the profile env-bringup.yml proves.
+  - id: guardian
+    description: The Guardian mediation service, sole credential holder and reference monitor
+    milestone: M3
+    landed: true
+    kind: deployment
+    namespace: guardian
+    name: guardian
+    min_count: 1
+    owner: guardian/deploy/deployment.yaml
+    required_in: full
+
+  # --- M4 - agents and the trace plane ---------------------------------------------------------
+  # M4 ADDS NO ROW, AND THAT REQUIRES SAYING, BECAUSE THIS FILE'S OWN HEADER ARGUES THAT A MISSING
+  # LINE IS NOT EVIDENCE OF ANYTHING.
+  #
+  # The two things M4 brings up are the agent layer and the Langfuse trace plane. Neither takes a
+  # row, for two different reasons.
+  #
+  # THE AGENT LAYER IS NOT A DEPLOYED COMPONENT. Executors are ephemeral by construction -- that is
+  # the property M4's env scan exists to prove -- and the Orchestrator and Supervisors are a graph
+  # the runner drives for the duration of a run, not a workload standing in a namespace between
+  # runs. A `deployment` row would assert something is always up that is only ever up during a run,
+  # so the preflight gate would fail on a correctly idle environment. What the framework's health
+  # is checked by is the run itself.
+  #
+  # LANGFUSE IS OUT OF THE REPORTED SET DELIBERATELY, AND THE REASON IS NOT THAT IT WOULD NOT FIT
+  # THE SCHEMA. It genuinely would not: `kind` admits nodes, deployment, daemonset and statefulset,
+  # scripts/status.sh treats anything else as a failure rather than a skip, and Langfuse v3 runs as
+  # six containers under Docker Compose on the development host. But "the schema has no value for
+  # it" is a description of the obstacle, not a justification, and a schema can be extended.
+  #
+  # The justification is what this report is FOR. docs/protocols/evaluation-protocol.md section 5
+  # rule 1 makes a green `make status` the preflight gate for every run, and the thing it gates is
+  # the ENVIRONMENT UNDER STUDY: the cluster, the target application, the Monitor and the Guardian.
+  # The trace plane observes that environment and is not part of it -- that is the same distinction
+  # infra/observability/langfuse/README.md gives for keeping it out of the cluster in the first
+  # place, and RQ4's interference measure depends on it holding. A trace plane inside the run gate
+  # would make an unrelated Compose stack able to block a campaign, and would put the observer into
+  # a report whose whole subject is the observed.
+  #
+  # The consequence is stated rather than hidden: a run started with Langfuse down will produce a
+  # bundle with no trace, and `make status` will not have warned about it. That is a real cost and
+  # it is accepted here rather than paid for by widening what this file means. The bring-up sequence
+  # in infra/observability/langfuse/README.md is where the check belongs, and row T-05's evidence is
+  # a trace that either exists or does not -- which is a stronger check than a liveness probe.
+  #
+  # REJECTED: adding a fifth `kind` -- `compose` or `external` -- to scripts/status.sh so a row
+  # could be written. That would teach the run gate to reach outside the cluster, and the first
+  # component to follow would be a developer's local model server. The report's boundary is the
+  # cluster, and it is worth more as a boundary than as a coverage number.

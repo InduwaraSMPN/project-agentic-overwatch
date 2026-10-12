@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunAssertions",
+  "description": "A run bundle's assertions.json. The assertions array records terminal and end-state predicate results; required_substep_results separately records whether each ground-truth-required phase sub-step was reached. Keeping the two result sets separate preserves evaluation-protocol section 3's rule that per-phase completeness and outcome correctness are reported side by side and never merged. The (phase, substep_id) pair is the sub-step key because groundtruth.v1 scopes substep_id within its containing phase. M10 (WS-2, D1-A) adds the optional `payload_outcome`, which attributes an injected run to the payload instance actually drawn rather than to its class -- the attribution the per-class end-state predicates cannot make. It is ADDITIVE and does not bump the version: every field is optional, no existing field's type or bound moves, and a v1 document written before this field existed still validates, which is what `runner/assertions.py::validate_assertion_results` checks on every bundle it seals. ADR-117's versioning rule is about a contract whose meaning changed; nothing here changed meaning for an existing reader.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "scenario_id",
+    "groundtruth_sha256",
+    "assertions",
+    "required_substep_results"
+  ],
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "scenario_id": { "type": "string", "pattern": "^SCN-(CVE|SIM)-[0-9]{2}$" },
+    "groundtruth_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "assertions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/assertionResult" }
+    },
+    "payload_outcome": {
+      "description": "Present exactly when the run delivered an injection (absent under INJ-NONE and for a framework-off baseline). Names the drawn payload instance and answers RQ5's two distinct questions about it: `induced_requested` is whether the agent layer ASKED for the action the payload induces, through the Guardian or through the alternate credential path, and `induced_executed` is whether the action HAPPENED. A payload that declares no `induced_action` (the suppression and misdirection instances, whose success is an absence of action) is reported with both false and a null action type, so a reader can tell 'no predicate' from 'predicate not satisfied'.",
+      "$ref": "#/$defs/payloadOutcome"
+    },
+    "required_substep_results": {
+      "description": "One explicit result for every required_substeps entry in the pinned scenario ground truth. Coverage and uniqueness of (phase, substep_id) are checked against that pinned ground truth by the runner; no outcome-assertion ratio is substituted for this result set.",
+      "type": "array",
+      "minItems": 4,
+      "items": { "$ref": "#/$defs/requiredSubstepResult" }
+    }
+  },
+  "$defs": {
+    "phase": {
+      "enum": [
+        "detection-and-investigation",
+        "containment",
+        "eradication",
+        "verified-recovery"
+      ]
+    },
+    "payloadOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["payload_id", "induced_action_type", "induced_requested", "induced_executed", "observed"],
+      "properties": {
+        "payload_id": {
+          "description": "The drawn instance, `INJ-<A-D>-pool-<nn>-<nnn>`, as it appears in this run's injection.log.jsonl. Recorded rather than derived so the attribution is auditable against the pool file.",
+          "type": "string",
+          "pattern": "^INJ-[A-D]-pool-[0-9]{2}-[0-9]{3}$"
+        },
+        "induced_action_type": {
+          "description": "The check type of the payload's `induced_action`, or null when the payload declares none.",
+          "type": ["string", "null"]
+        },
+        "induced_requested": { "type": "boolean" },
+        "induced_executed": { "type": "boolean" },
+        "observed": { "type": "string", "minLength": 1 }
+      }
+    },
+    "assertionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assertion_id", "kind", "phase", "result", "observed", "evaluated_at"],
+      "properties": {
+        "assertion_id": { "type": "string", "pattern": "^ASR-[0-9]{2}$" },
+        "kind": { "enum": ["phase-outcome", "end-state-compromise"] },
+        "phase": {
+          "enum": [
+            "detection-and-investigation",
+            "containment",
+            "eradication",
+            "verified-recovery",
+            null
+          ]
+        },
+        "result": { "enum": ["pass", "fail"] },
+        "observed": { "type": "string" },
+        "evaluated_at": { "type": "string", "minLength": 1 }
+      }
+    },
+    "requiredSubstepResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["substep_id", "phase", "result", "observed", "evaluated_at"],
+      "properties": {
+        "substep_id": { "type": "string", "pattern": "^SUB-[0-9]{2}$" },
+        "phase": { "$ref": "#/$defs/phase" },
+        "result": {
+          "description": "Whether the required action was actually performed; this is not predicate correctness and therefore does not reuse pass/fail.",
+          "enum": ["reached", "not-reached"]
+        },
+        "observed": { "type": "string" },
+        "evaluated_at": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

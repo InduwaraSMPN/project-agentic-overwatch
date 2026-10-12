@@ -1,0 +1,16 @@
+# Fixture manifest -- flat `key: value`, no nesting and no lists. See monitor/fixtures/README.md
+# for the format, the key set, and why the corpus_cap_* values are not evaluation-protocol values.
+fixture_id: falco-shell-in-container
+source: falco
+provenance: synthesised
+synthesised_from: Falco's own JSON emitter (userspace/falco/falco_outputs.cpp, handle_msg), the FalcoPayload struct in falcosidekick types/types.go, the eight documented rule priorities, and the documented supported-fields list -- all cited in monitor/aggregator/sources/falco.py. No live Falco has produced these bytes.
+capture_commit:
+source_tool_version:
+seed:
+golden_arm: G0-FULL
+audit_severity:
+corpus_cap_status: FIXTURE-CORPUS-TEST-PARAMETER
+corpus_cap_excerpt_count_max: 3
+corpus_cap_excerpt_length_max_chars: 48
+corpus_cap_summary_length_max_chars: 72
+description: Three Falco alerts covering the priority ladder, the subject ladder (Pod, then Container, then Node once k8s fields are the <NA> placeholder) and out-of-order timestamps. Its caps are deliberately the tightest in the corpus so that both the count cap and the length cap bind on every event and truncation is exercised rather than merely configured.

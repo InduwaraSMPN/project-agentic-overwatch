@@ -1,0 +1,82 @@
+{
+  "campaign_id": "CAMP-20261008-smoke-p1a-a",
+  "seeds": [
+    901
+  ],
+  "load_profiles": [
+    "LOAD-STEADY"
+  ],
+  "runs": [
+    {
+      "run_id": "RUN-G0-FULL-SCN-SIM-01-INJ-NONE-901",
+      "condition": "G0-FULL",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-NONE",
+      "seed": 901,
+      "is_baseline": false,
+      "baseline_run_id": "BASE-LOAD-STEADY-901",
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-S2-FLAT-SCN-SIM-01-INJ-NONE-901",
+      "condition": "S2-FLAT",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-NONE",
+      "seed": 901,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-S3-SINGLE-SCN-SIM-01-INJ-NONE-901",
+      "condition": "S3-SINGLE",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-NONE",
+      "seed": 901,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G1-LOGONLY-SCN-SIM-01-INJ-NONE-901",
+      "condition": "G1-LOGONLY",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-NONE",
+      "seed": 901,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G2-SHAREDCRED-SCN-SIM-01-INJ-NONE-901",
+      "condition": "G2-SHAREDCRED",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-NONE",
+      "seed": 901,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    },
+    {
+      "run_id": "RUN-G3-UNQUOTED-SCN-SIM-01-INJ-NONE-901",
+      "condition": "G3-UNQUOTED",
+      "scenario_id": "SCN-SIM-01",
+      "injection_condition": "INJ-NONE",
+      "seed": 901,
+      "is_baseline": false,
+      "baseline_run_id": null,
+      "load_profile_id": "LOAD-STEADY"
+    }
+  ],
+  "campaign_seed": 0,
+  "generated_order": [
+    "RUN-G0-FULL-SCN-SIM-01-INJ-NONE-901",
+    "RUN-S2-FLAT-SCN-SIM-01-INJ-NONE-901",
+    "RUN-S3-SINGLE-SCN-SIM-01-INJ-NONE-901",
+    "RUN-G1-LOGONLY-SCN-SIM-01-INJ-NONE-901",
+    "RUN-G2-SHAREDCRED-SCN-SIM-01-INJ-NONE-901",
+    "RUN-G3-UNQUOTED-SCN-SIM-01-INJ-NONE-901"
+  ],
+  "versions_env_sha256": "b7a10bcb4eeb64657be7e69e9baaf7f7d4d34498e89967a5d589b7aa0f98a69c",
+  "freeze_tag": "v2-pilot-20261008a"
+}

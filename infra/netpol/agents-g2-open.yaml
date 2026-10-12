@@ -1,0 +1,222 @@
+# infra/netpol/agents-g2-open.yaml -- the G2-SHAREDCRED overlay: the one object change that opens
+# the agent layer's network path to the Kubernetes API server, and the whole of the environmental
+# delta between the G0-FULL baseline arm and the G2-SHAREDCRED arm. Milestone task M3-T3.5, binding
+# ADR: docs/adr/ADR-024-g2-sharedcred-open-question.md.
+#
+# WHAT THIS FILE IS, IN ONE SENTENCE
+#   It replaces the spec of exactly one object -- the CiliumNetworkPolicy
+#   `agents-kube-apiserver-boundary` in namespace `agents`, authored by
+#   infra/netpol/agents-default-deny.yaml -- swapping that object's `egressDeny` for an `egress`
+#   allow, and it declares no other object of any kind.
+#
+# HOW IT IS APPLIED, AND WHY THE OBJECT NAME MATCHES
+#   G0 -> G2:  kubectl apply -f infra/netpol/agents-g2-open.yaml
+#   G2 -> G0:  kubectl apply -f infra/netpol/agents-default-deny.yaml
+#   The object name is identical in both files on purpose. `kubectl apply` computes a three-way
+#   merge against the last-applied configuration, so applying this file removes the `egressDeny` key
+#   the other file set and installs `egress` in its place: one object, one spec, replaced in one
+#   transition with no interval in which the object is absent. That is what ADR-024 means by "the
+#   two are a pair: the arm's whole environmental delta is which one is applied", and it is why the
+#   object is named for what it governs rather than for the verdict it returns.
+#
+#   ONE OPERATIONAL CONSTRAINT FOLLOWS AND IT IS EASY TO BREACH BY HABIT: both files must be applied
+#   the same way. The key removal above works because `kubectl apply` records what it applied and
+#   can therefore tell that `egressDeny` was ours to delete. A cluster where one arm was installed
+#   with `kubectl create` or `kubectl replace`, or with `--server-side` under a different field
+#   manager, has no such record for the merge to reason from, and the stale key can survive the
+#   switch -- which is the quiet failure this whole section exists to prevent. Use `kubectl apply`
+#   for both, or `kubectl apply --server-side` for both; never one of each. The Tier B check below
+#   is what catches it if it happens anyway.
+#
+#   The rejected alternative was a differently-named object here. It fails in a way that is quiet
+#   rather than loud, which is what makes it worth writing down: both files would apply cleanly,
+#   both objects would exist, and Cilium's rule that "deny policies take precedence over allow
+#   policies, regardless of whether they are a Cilium Network Policy, a Clusterwide Cilium Network
+#   Policy or even a Kubernetes Network Policy"
+#   (https://docs.cilium.io/en/stable/security/policy/deny/) would leave the deny in force. G2 would
+#   behave identically to G0, every run in the arm would be valid-looking and wrong, and nothing in
+#   the run bundle would say so. An ablation arm that silently is not one is the worst outcome
+#   available in this design, and object-name identity is what forecloses it.
+#
+# ============================================================================================
+# WHAT THIS FILE CHANGES, RELATIVE TO infra/netpol/agents-default-deny.yaml
+# ============================================================================================
+#
+#   Exactly one thing: pods in `agents` may open TCP connections to the Kubernetes API server, on
+#   the two ports it is reachable on in this cluster. Under the default-deny object that flow is
+#   denied by name; under this one it is allowed by name.
+#
+#   Two mechanisms have to line up for that to be true, and both are stated here rather than
+#   assumed, because a reader checking the ablation's validity should not have to reconstruct them:
+#     1. The deny is gone. Cilium deny rules beat every allow rule from every policy, so as long as
+#        an `egressDeny` naming `kube-apiserver` exists anywhere selecting these pods, no allow can
+#        reach the API server. Replacing the spec of the single object that carries it is what
+#        removes it -- and it is the only supported way, because this project writes no other
+#        Cilium deny rule anywhere.
+#     2. The allow is additive. The Kubernetes NetworkPolicy `agents-default-deny-egress` still
+#        holds every pod in `agents` in default-deny egress and still permits only DNS and the
+#        Guardian. Cilium composes allow rules from Kubernetes NetworkPolicy and CiliumNetworkPolicy
+#        into one permitted set for the endpoint, so the rule below adds a third permitted
+#        destination without that policy being edited. This is the one behavioural assumption in
+#        this file that is not settled by a quoted line of documentation; the Tier B check named
+#        below is what settles it, and if it turns out to be false the correction is a companion
+#        allow rule in the portable object rather than any change to the Guardian.
+#
+# ============================================================================================
+# WHAT THIS FILE MUST NOT CHANGE. THIS IS THE ASSERTION THE ARM'S VALIDITY RESTS ON.
+# ============================================================================================
+#
+#   ADR-024's Decision commits M3 to "isolation tests proving the Guardian's own code and policy are
+#   unchanged by it", and states the Tier B half in these words: "the Guardian's own RBAC, code path
+#   and policy bundle are unchanged, and the NetworkPolicy and the issued credential are the whole
+#   delta. That assertion is what makes 'removes exactly one property' checkable for this arm rather
+#   than asserted." docs/plans/M3-implementation-plan.md carries the same requirement as isolation
+#   test 8. The list below is that assertion written where the object that could violate it lives.
+#
+#   NOT CHANGED, and verifiable by the fact that this file does not contain them:
+#     - guardian/deploy/rbac.yaml. Byte-identical across G0, G1 and G2. Its ServiceAccount
+#       holds the same verbs on the same resources in the same namespace in every arm. In particular
+#       the Guardian does NOT hold `create serviceaccounts/token` in any arm -- that file refuses it
+#       explicitly, so the G2 credential cannot be minted by the Guardian and the G0-to-G2 delta
+#       cannot become a question of whether the Guardian chose to use a verb it already had.
+#     - The Guardian's code path. Nothing here is read by guardian/. `GuardianConfig`'s mode flag is
+#       set by the runner at process start (ADR-023), and its effect on the Guardian is confined to
+#       the audit record's `guardian_mode` field; the mode does not select a policy, a transport or
+#       a branch in the mediation pipeline.
+#     - The Rego bundle. Its sha256 is asserted equal across G0, G1 and G2 by the offline isolation
+#       tests, and `scripts/policy_purity_grep.sh` asserts statically that no file under
+#       guardian/policies/ mentions any arm or mode token. Nothing in this file could affect either,
+#       which is exactly the point: the arm is reachable only by applying a manifest, never
+#       by editing Guardian code or policy, as .agents/rules/10-guardian-first.md requires.
+#     - The `agents` namespace object, its Pod Security labels, and the `default` ServiceAccount's
+#       `automountServiceAccountToken: false`. All three are declared only in
+#       infra/netpol/agents-default-deny.yaml and are untouched here. The G2 credential is a scoped
+#       ServiceAccount token minted out of band through the TokenRequest API with the operator's own
+#       kubeconfig (ADR-024, ADR-004); not the namespace default account, and this file neither
+#       creates nor references any credential. There is no token, key or kubeconfig in this file and
+#       there must never be one.
+#     - `agents-default-deny-egress`. The DNS rule and the Guardian rule are identical in both arms,
+#       so the agent layer's reach to cluster DNS and to the mediation surface is not part of the
+#       delta. If this file changed them, the arm would differ from G0 in more than one property and
+#       ADR-024's causal attribution would not follow.
+#     - `agents-default-deny-ingress`. Inbound traffic to the agent namespace is identical in both
+#       arms.
+#     - Every other namespace. This object is namespaced to `agents`; `boutique`, `guardian`,
+#       `monitor` and `observability` are unaffected in every arm.
+#
+#   WHAT IS NOT IN THIS FILE AND IS STILL PART OF THE ARM. The netpol is one half of the delta; the
+#   scoped credential is the other, and it is issued by the runner rather than declared here, so
+#   applying this file alone is not the G2 arm. It removes the network obstacle; ADR-024
+#   is explicit that the agent-side surface by which an agent comes to hold and use that credential
+#   is an OPEN QUESTION handed to M4, with four candidate answers eliminated. Nothing in this
+#   file may be read as answering it, and in particular nothing here authorises a Kubernetes client,
+#   a `kubectl` invocation or a `KUBECONFIG` under `agents/`, which rule 10 forbids and
+#   scripts/grep_guard.sh enforces with no exemption mechanism.
+#
+# WHY THE ALLOW NAMES PORTS, WHEN THE DENY IT REPLACES DOES NOT
+#   The asymmetry is deliberate and runs the safe way in both directions. A deny should be as wide
+#   as the invariant it enforces, so the deny names no ports and covers every port on the API
+#   server's address. An allow should be as narrow as the capability it grants, so this one names
+#   two: an entity selector alone permits any port on that address, and on kind the API server's
+#   address is the control-plane NODE's address, which also carries the kubelet's read-write port
+#   10250. Opening the API server in the G2 arm is the design; opening the kubelet as a side effect
+#   of the wording is not, and would be a second removed property that §3.5.4's
+#   one-property-at-a-time requirement does not permit.
+#
+#   BOTH 443 AND 6443 ARE NAMED, and the reason is the same uncertainty
+#   infra/netpol/agents-default-deny.yaml records for the denial. An in-cluster client reaches the
+#   API through the `kubernetes` ClusterIP on 443, which kube-proxy translates to the control-plane
+#   node's :6443 -- and whether Cilium's L4 match sees the pre-translation port or the post-
+#   translation one is not something this project has established on its own datapath. Naming both
+#   makes the rule correct under either answer. The cost of the redundant one is nil: 6443 on the
+#   API server's own address is the API server, and 443 on it is the same listener seen through the
+#   Service. The Tier B check below reveals which port actually carried the flow, and if the answer
+#   is ever wanted for its own sake it is a `cilium monitor` line away.
+#
+# HOW THIS IS VERIFIED (TIER B; THIS FILE CANNOT BE APPLIED OFFLINE)
+#   1. The delta is one object. Before applying anything:
+#        kubectl -n agents get networkpolicy,ciliumnetworkpolicy -o name
+#      after applying this file, the same command must return the same four names. Only the
+#      CiliumNetworkPolicy's spec differs, and
+#        kubectl -n agents get ciliumnetworkpolicy agents-kube-apiserver-boundary -o yaml
+#      shows `egress` where the G0 arm shows `egressDeny`, with nothing else changed.
+#   2. The boundary is actually open. Run the T-11 probe:
+#        sh infra/tests/probe_agent_to_api.sh
+#      and expect it to REPORT FAILURE. That inversion is not a defect and it is the reason it is
+#      written down here: the probe's pass condition is that the agent namespace cannot reach the
+#      API server, which is a G0 property. Under G2 the probe should observe the connection
+#      succeeding, and a probe that still passed under G2 would mean this overlay had not taken
+#      effect -- the arm would be running as G0 in disguise. Whoever runs the Tier B sequence must
+#      restore G0 by re-applying infra/netpol/agents-default-deny.yaml before any G0 or G1 run, and
+#      the probe passing again is the evidence that the restoration worked.
+#   3. The Guardian is unchanged. `kubectl auth can-i --list` for the Guardian's ServiceAccount,
+#      cluster-scoped and in `boutique`, must return the same effective set under this overlay as
+#      under the default-deny -- the assertion guardian/deploy/rbac.yaml's header already specifies.
+#      Together with the offline policy-bundle sha256 equality, that is isolation test 8.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Renaming the object stops it replacing the deny, and G2 silently becomes G0; see HOW IT IS
+#   APPLIED. Widening the selector past `kube-apiserver` -- to `host`, `remote-node`, `world` or
+#   `all` -- makes the arm remove more than one property and invalidates the ablation's causal
+#   claim. Dropping `toPorts` opens the kubelet alongside the API server. Adding any second object
+#   here ends the one-object-delta property that isolation test 8 checks. Adding anything that
+#   touches guardian/ contradicts ADR-024 outright.
+#
+# FIELD NAMES WERE CHECKED, NOT RECALLED
+#   Same principle as the sibling file, and the same sources, read for the pinned series --
+#   `stable` on docs.cilium.io serves the 1.20 line, which is CILIUM_CHART_VERSION=1.20.1 in
+#   infra/versions.env:
+#     apiVersion cilium.io/v2, kind CiliumNetworkPolicy, spec.endpointSelector, spec.egress[],
+#     toEntities and the entity name `kube-apiserver` -- which the entity list defines as
+#     representing "the kube-apiserver in a Kubernetes cluster ... both deployments of the
+#     kube-apiserver: within the cluster and outside of the cluster":
+#       https://docs.cilium.io/en/stable/security/policy/layer3/
+#     spec.egress[].toPorts[].ports[].port, written as a quoted string, and .protocol with accepted
+#     values TCP, UDP and ""/ANY:
+#       https://docs.cilium.io/en/stable/security/policy/layer4/
+#     deny precedence over allow, which is what makes the object-name identity load-bearing:
+#       https://docs.cilium.io/en/stable/security/policy/deny/
+#   The one documented caveat on this entity does not apply here: the entity "may not work for
+#   ingress traffic in some Kubernetes distributions, such as Azure AKS and GCP GKE", because those
+#   tunnel control-plane ingress through worker nodes and lose the source address. This rule is
+#   egress, on kind, with the API server on a node of the cluster itself.
+---
+# THE ONE OBJECT. Same apiVersion, same kind, same name, same namespace, same endpointSelector as
+# the object in infra/netpol/agents-default-deny.yaml; only the rule changes, from a deny to an
+# allow. Nothing else is declared in this file, and nothing else may be.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  # Identical to the name in infra/netpol/agents-default-deny.yaml. This is load-bearing: `kubectl
+  # apply` replaces that object's spec rather than creating a second one, and a second one would
+  # leave the deny in force and G2 indistinguishable from G0. See HOW IT IS APPLIED in the header.
+  name: agents-kube-apiserver-boundary
+  namespace: agents
+  # Identical to the G0 object's labels, deliberately. An arm marker here was considered and
+  # rejected: it would make the two objects differ in metadata as well as in the rule, so the Tier B
+  # assertion below could no longer be "only the rule changed", and it would invent a label domain
+  # this repository does not otherwise use. The arm is already recorded where it is read from -- the
+  # runner's flag, the run manifest, and every AuditRecord's `guardian_mode` (ADR-023) -- and an
+  # operator standing in front of the cluster reads it off the spec: `egress` is G2, `egressDeny` is
+  # G0, in one `kubectl get -o yaml`.
+  labels:
+    app.kubernetes.io/part-of: agentic-overwatch
+    app.kubernetes.io/component: agents
+spec:
+  # Every endpoint in `agents`, exactly as the object it replaces.
+  endpointSelector: {}
+  # `egress`, not `egressDeny`. The absence of `egressDeny` is the entire security-relevant change,
+  # and `kubectl apply` deletes that key because it is present in the recorded last-applied
+  # configuration and absent here.
+  egress:
+    - toEntities:
+        - kube-apiserver
+      # Two ports, not none. See WHY THE ALLOW NAMES PORTS in the header: an entity selector with no
+      # toPorts would also open the kubelet on the same node address, which is a second removed
+      # property the ablation does not permit. Ports are quoted strings in this CRD.
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "6443"
+              protocol: TCP

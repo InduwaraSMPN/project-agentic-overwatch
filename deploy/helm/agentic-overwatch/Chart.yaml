@@ -1,0 +1,16 @@
+apiVersion: v2
+name: agentic-overwatch
+description: >-
+  Packaging overlay for the frozen v1.0 Agentic Overwatch artifact. Deploys the Guardian
+  mediation service, the Monitor evidence aggregator and audit forwarder, and the agent
+  layer's namespace/network/RBAC boundary. Packaging only -- no change to Guardian, Monitor
+  or agent behavior versus the manifests under guardian/deploy/, monitor/deploy/ and
+  infra/netpol/ (AGENTS.md iron rule 6; docs/milestones/M8-hardening.md T8.1).
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - incident-response
+  - guardian
+  - reference-monitor
+  - kubernetes

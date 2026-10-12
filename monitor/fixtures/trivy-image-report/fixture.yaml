@@ -1,0 +1,16 @@
+# Fixture manifest -- flat `key: value`, no nesting and no lists. See monitor/fixtures/README.md
+# for the format, the key set, and why the corpus_cap_* values are not evaluation-protocol values.
+fixture_id: trivy-image-report
+source: trivy
+provenance: synthesised
+synthesised_from: The `trivy image --format json` report structure described in Trivy's reporting documentation (SchemaVersion, CreatedAt, ArtifactName, ArtifactType, Metadata, Results[] with Target/Class/Type/Vulnerabilities[]), and that page's statement that VulnerabilityID, PkgName, InstalledVersion and Severity are always filled while other fields may be empty -- cited in monitor/aggregator/sources/trivy.py. No live Trivy scan produced these bytes, and every CVE identifier in them is invented.
+capture_commit:
+source_tool_version:
+seed:
+golden_arm: G0-FULL
+audit_severity:
+corpus_cap_status: FIXTURE-CORPUS-TEST-PARAMETER
+corpus_cap_excerpt_count_max: 6
+corpus_cap_excerpt_length_max_chars: 160
+corpus_cap_summary_length_max_chars: 240
+description: One report with three Results entries -- an OS package target with two findings, a language package target with one, and a target that carries no Vulnerabilities key at all, which is a real empty result rather than a malformed document. Exercises the two-level group walk that gives each finding its own byte span inside one JSON document, the document and group context that carry ArtifactName and CreatedAt down onto records that do not hold them, the composed summary used when Title is absent, and the UNKNOWN-to-info severity floor.

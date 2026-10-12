@@ -1,0 +1,151 @@
+{
+  "$defs": {
+    "EvidenceSeverity": {
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info"
+      ],
+      "title": "EvidenceSeverity",
+      "type": "string"
+    },
+    "EvidenceSource": {
+      "enum": [
+        "falco",
+        "prometheus",
+        "k8s_audit",
+        "trivy"
+      ],
+      "title": "EvidenceSource",
+      "type": "string"
+    },
+    "RawRef": {
+      "additionalProperties": false,
+      "properties": {
+        "length": {
+          "minimum": 1,
+          "title": "Length",
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "path": {
+          "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*(?:/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$",
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "offset",
+        "length"
+      ],
+      "title": "RawRef",
+      "type": "object"
+    },
+    "ResourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "ns": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ns"
+        }
+      },
+      "required": [
+        "ns",
+        "kind",
+        "name"
+      ],
+      "title": "ResourceRef",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "EvidenceEvent v2 -- the Monitor-to-Orchestrator contract declared in docs/02-architecture.md section 3. Count and length caps are owned by docs/protocols/evaluation-protocol.md section 4 and are enforced before an event is constructed, so they are deliberately absent here. Generated from monitor/aggregator/models.py; regenerate with `python -m monitor.aggregator.models` rather than editing.",
+  "properties": {
+    "event_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "evidence_excerpts": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Evidence Excerpts",
+      "type": "array"
+    },
+    "raw_ref": {
+      "$ref": "#/$defs/RawRef"
+    },
+    "resource": {
+      "$ref": "#/$defs/ResourceRef"
+    },
+    "schema_version": {
+      "const": "v2",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "severity": {
+      "$ref": "#/$defs/EvidenceSeverity"
+    },
+    "signal_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Signal Id"
+    },
+    "source": {
+      "$ref": "#/$defs/EvidenceSource"
+    },
+    "summary": {
+      "title": "Summary",
+      "type": "string"
+    },
+    "ts": {
+      "format": "date-time",
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "ts",
+    "source",
+    "signal_id",
+    "severity",
+    "resource",
+    "summary",
+    "evidence_excerpts",
+    "raw_ref",
+    "schema_version"
+  ],
+  "title": "EvidenceEvent",
+  "type": "object"
+}

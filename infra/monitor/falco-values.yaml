@@ -1,0 +1,86 @@
+# Values validated against falcosecurity/falco chart 8.0.1 (Falco 0.43.0).
+# The chart bundles Falcosidekick chart 0.12.1 (app 2.31.1); keeping the
+# integration under this chart guarantees Falco's HTTP output targets the
+# matching in-release Service.
+
+driver:
+  enabled: true
+  # install.sh supplies driver.kind from FALCO_DRIVER in infra/versions.env.
+  modernEbpf:
+    sysfsMount: true
+
+falco:
+  json_output: true
+  rules_files:
+    - /etc/falco/rules.d
+  stdout_output:
+    enabled: true
+  syslog_output:
+    enabled: false
+
+# install.sh supplies monitor/rules/overwatch-rules.yaml with
+# --set-file customRules.overwatch-rules\.yaml=... so this file stays the
+# single source for rule content instead of embedding a second copy here.
+customRules: {}
+
+# The socket is the kind NODE's own containerd, /run/containerd/containerd.sock. The chart mounts
+# each listed socket from the node at /host<path> and the plugin prepends /host itself. An earlier
+# value, /run/host-containerd/containerd.sock, names no file on a kind node: the mount was empty,
+# the plugin enriched nothing, and every event reported container.id=host with no Kubernetes
+# namespace or pod -- which left the agent layer unable to attribute any alert to a workload.
+#
+# WHY THE SOCKET SITS UNDER `cri` AND NOT UNDER `containerd` (ADR-072)
+# Fixing that path repaired the plugin's *async container events* and left its *syscall events*
+# still reporting container.id=host, which suppressed every syscall-backed rule for a day (ADR-068).
+# The cause is matcher selection, not the socket and not the nesting. kind runs the systemd cgroup
+# driver (`SystemdCgroup = true`), so a pod cgroup reaches Falco as
+#
+#   /<kind node's docker id>/kubelet.slice/.../cri-containerd-<64hex>.scope
+#
+# and the containerd matcher delegates with `is_containerd = true`, whose short-id branch in the
+# plugin's runc matcher explicitly skips any cgroup ending in `.service`, `.slice` or `.scope`.
+# Every pod cgroup here ends in `.scope`. Only the CRI matcher carries a layout for this shape,
+# `{"/cri-containerd-", ".scope"}`, so the socket must be enumerated by the `cri` engine. Upstream
+# says the same in falco#3692 and falco#3587, and charts#892 moved the socket for this reason.
+#
+# The engine choice is coupled to the plugin version. The chart's default container:0.6.1 panics at
+# startup when CRI is enabled (go-worker cri.go:243) -- which is what the note this comment replaces
+# recorded, correctly, for 0.6.1. 0.7.1 is the first release without the panic; 0.7.4 is pinned here.
+# On a kind node every container is CRI-managed, so disabling the containerd engine loses nothing.
+collectors:
+  containerEngine:
+    # Pinned ahead of the chart's bundled 0.6.1 for the panic above. Version moves with the chart
+    # only after the CRI engine is re-verified on this profile.
+    pluginRef: ghcr.io/falcosecurity/plugins/plugin/container:0.7.4
+    engines:
+      docker:
+        enabled: false
+      podman:
+        enabled: false
+      containerd:
+        enabled: false
+      cri:
+        enabled: true
+        sockets: ["/run/containerd/containerd.sock"]
+      lxc:
+        enabled: false
+      libvirt_lxc:
+        enabled: false
+      bpm:
+        enabled: false
+
+defaultRules:
+  enabled: false
+
+falcosidekick:
+  enabled: true
+  # install.sh derives the dependency appVersion from the exact Sidekick chart
+  # pinned by FALCOSIDEKICK_VERSION and supplies image.tag at render/install time.
+  replicaCount: 1
+  webui:
+    enabled: false
+  config:
+    webhook:
+      address: http://evidence-aggregator.monitor.svc.cluster.local:8080/v1/falco
+      method: POST
+      minimumpriority: debug

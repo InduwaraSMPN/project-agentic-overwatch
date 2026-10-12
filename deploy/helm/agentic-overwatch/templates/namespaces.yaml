@@ -1,0 +1,43 @@
+# Mirrors the Namespace objects in guardian/deploy/rbac.yaml, monitor/deploy/namespace.yaml
+# and infra/netpol/agents-default-deny.yaml. Pod Security Standards labels are copied
+# byte-for-byte (baseline enforce, restricted warn/audit) -- see those files for why baseline
+# is load-bearing (it forbids hostNetwork, which would otherwise let a pod escape every
+# NetworkPolicy in the agents namespace) rather than only hygiene.
+#
+# The `boutique` namespace is deliberately NOT created here -- see values.yaml
+# namespaces.boutique and NOTES.txt.
+{{- if .Values.namespaces.create.guardian }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.guardian }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: guardian
+    pod-security.kubernetes.io/enforce: {{ .Values.podSecurityStandards.enforce }}
+    pod-security.kubernetes.io/warn: {{ .Values.podSecurityStandards.warn }}
+    pod-security.kubernetes.io/audit: {{ .Values.podSecurityStandards.audit }}
+{{- end }}
+---
+{{- if .Values.namespaces.create.monitor }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.monitor }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: monitor
+{{- end }}
+---
+{{- if .Values.namespaces.create.agents }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.agents }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: agents
+    pod-security.kubernetes.io/enforce: {{ .Values.podSecurityStandards.enforce }}
+    pod-security.kubernetes.io/warn: {{ .Values.podSecurityStandards.warn }}
+    pod-security.kubernetes.io/audit: {{ .Values.podSecurityStandards.audit }}
+{{- end }}

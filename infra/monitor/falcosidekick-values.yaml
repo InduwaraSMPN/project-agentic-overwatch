@@ -1,0 +1,16 @@
+# Values validated against falcosecurity/falcosidekick chart 0.12.1
+# (Falcosidekick 2.31.1). The chart's default image tag differs from its
+# appVersion, so the verified application version is explicit.
+replicaCount: 1
+
+# install.sh derives image.tag from the appVersion of the exact chart version
+# selected by FALCOSIDEKICK_VERSION in infra/versions.env.
+
+webui:
+  enabled: false
+
+config:
+  webhook:
+    address: http://evidence-aggregator.monitor.svc.cluster.local:8080/v1/falco
+    method: POST
+    minimumpriority: debug

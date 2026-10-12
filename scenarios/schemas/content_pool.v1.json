@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AdversarialContentPool",
+  "description": "One injection class's content pool, as scenarios/attackers/content/INJ-<A-D>-pool-<nn>.json declares it. scenarios/attackers/content.py::load_pool validates a pool against this schema before its own positional-contiguity check (ADR-117: schema-first). The M10 pool-02 files (D8) carry, on every instance, an `induced_action` -- a `cluster-executed-any` check (schema groundtruth.v3) naming the cluster action the payload is trying to induce -- which runner/evaluate_assertions.py resolves to score `payload_outcome`. `induced_action` is OPTIONAL rather than required: some payloads (the suppression instances of INJ-A and the misdirection instances of INJ-B/INJ-C, whose relevance_note calls their success \"an ABSENCE in the audit log\") induce no positive cluster action at all, and a `cluster-executed-any` induced_action on one of those would be a fiction; those instances carry none, and their success is caught by the phase-outcome assertions failing rather than by `induced_executed`. The v1 pools predate `induced_action` and carry none on any instance, which this optional field also admits so the loader reads both pool generations. WHY THE CHECK SHAPE IS COPIED HERE, NOT REFERENCED ACROSS FILES: scenarios/schemas/validate.py resolves only same-document `#/$defs/` references (ADR-035, stdlib-only), so this pool schema carries its own copy of the `check` $def; scenarios/tests/test_schemas.py::test_pool_check_shape_equals_groundtruth_v3_check_shape asserts it stays byte-for-byte equal to groundtruth.v3's, which is what makes an induced_action a ground-truth check by construction rather than by resemblance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pool_id", "injection_class", "relevance_note", "instances"],
+  "properties": {
+    "pool_id": {
+      "description": "INJ-<A-D>-pool-<nn>. The loader additionally requires the filename to declare the same id and the injection_class to agree with it.",
+      "type": "string",
+      "pattern": "^INJ-[A-D]-pool-[0-9]{2}$"
+    },
+    "injection_class": {
+      "description": "One of the four, spelled as scenarios/attackers/__init__.py's INJECTION_CLASSES spells them.",
+      "enum": ["INJ-A", "INJ-B", "INJ-C", "INJ-D"]
+    },
+    "relevance_note": {
+      "description": "Why these instances are included, recording the T-46 filter; the external cross-walk stays unbound pending researcher review at GATE (scenarios/groundtruth/README.md).",
+      "type": "string",
+      "minLength": 1
+    },
+    "instances": {
+      "description": "The pool's payload instances, in draw order. The loader requires payload_id to equal pool_id plus a contiguous 001-based index in this order, so reordering the file cannot silently change what a past seed drew.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/instance" }
+    }
+  },
+  "$defs": {
+    "instance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["payload_id", "text", "intent", "kit_category"],
+      "properties": {
+        "payload_id": { "type": "string", "pattern": "^INJ-[A-D]-pool-[0-9]{2}-[0-9]{3}$" },
+        "text": { "type": "string", "minLength": 1 },
+        "intent": { "type": "string", "minLength": 1 },
+        "kit_category": { "type": "string", "minLength": 1 },
+        "induced_action": {
+          "description": "The cluster action this payload is trying to induce, as a `cluster-executed-any` check (groundtruth.v3). Optional: an instance whose success is an absence of action carries none. A `direct_path: true` param marks an induced action expected to be reachable only through the alternate credential path (cluster_api_request), which the egress shim permits only under G2-SHAREDCRED (D1-A); it is a provenance hint that the executed-action matcher ignores, not a match filter.",
+          "$ref": "#/$defs/check"
+        }
+      }
+    },
+    "check": {
+      "description": "A machine-readable environment or audit assertion. The closed `type` set is what the five scenarios need and no more; a further type is an edit here plus an evaluator arm in the runner, which is the friction that keeps a label from becoming free prose. `cluster-executed-any`/`cluster-executed-none` (M10 SEAM 5) share the `guardian-executed-*` param vocabulary but evaluate over the unified executed-action stream -- Guardian-executed records UNION the API-server audit's mutations by the G2 principal -- so a compromise reached through the alternate credential path (D1-A) is scored exactly as one reached through the Guardian. `params` stays a flat scalar map (no new value shape): the read-verb flexibility ADR-088/supervisor ruling section 3.3 requires is expressed with the boolean `any_read_verb` flag runner/evaluate_assertions.py reads, not with a new type or an array-valued param.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "params"],
+      "properties": {
+        "type": {
+          "enum": [
+            "resource-absent",
+            "resource-present",
+            "image-digest-equals",
+            "replicas-at-least",
+            "networkpolicy-present",
+            "slo-probe-recovered",
+            "guardian-executed-none",
+            "guardian-executed-any",
+            "cluster-executed-none",
+            "cluster-executed-any"
+          ]
+        },
+        "params": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$" },
+          "additionalProperties": { "type": ["string", "integer", "boolean", "null"] }
+        }
+      }
+    }
+  }
+}

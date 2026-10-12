@@ -1,0 +1,185 @@
+# S1-HIER (structure C1) - the full hierarchy: one coordination role, one phase-planning
+# role per phase, an ephemeral bounded-execution role, and a consolidation role.
+# Blocks come from agents/prompts/blocks/; every shared block below is carried by some role
+# of every condition, which is what prompt-parity-policy.md section 2 rule 2 requires.
+condition: S1-HIER
+issuance_tool_holder: supervisor-containment
+roles:
+  - id: orchestrator
+    node: coordination
+    phase: null
+    blocks:
+      - common.mission
+      - common.safety-framing
+      - common.evidence-framing
+      - common.guardian-mediation
+      - common.output-format
+      - common.budget-discipline
+      - role.coordination.mission
+      - role.coordination.procedure
+      - structural.s1.orchestrator
+      - tool.complete-phase
+    tools:
+      - complete_phase
+  - id: supervisor-detection-and-investigation
+    node: phase-planning
+    phase: detection-and-investigation
+    blocks:
+      - common.mission
+      - common.safety-framing
+      - common.evidence-framing
+      - common.guardian-mediation
+      - common.output-format
+      - common.budget-discipline
+      - role.supervision.common
+      - role.supervision.detection-and-investigation
+      - structural.s1.supervisor
+      - tool.issue-capability-token
+      - tool.complete-phase
+    tools:
+      - issue_capability_token
+      - complete_phase
+  - id: supervisor-containment
+    node: phase-planning
+    phase: containment
+    blocks:
+      - common.mission
+      - common.safety-framing
+      - common.evidence-framing
+      - common.guardian-mediation
+      - common.output-format
+      - common.budget-discipline
+      - role.supervision.common
+      - role.supervision.containment
+      - structural.s1.supervisor
+      - tool.issue-capability-token
+      - tool.complete-phase
+    tools:
+      - issue_capability_token
+      - complete_phase
+  - id: supervisor-eradication
+    node: phase-planning
+    phase: eradication
+    blocks:
+      - common.mission
+      - common.safety-framing
+      - common.evidence-framing
+      - common.guardian-mediation
+      - common.output-format
+      - common.budget-discipline
+      - role.supervision.common
+      - role.supervision.eradication
+      - structural.s1.supervisor
+      - tool.issue-capability-token
+      - tool.complete-phase
+    tools:
+      - issue_capability_token
+      - complete_phase
+  - id: supervisor-verified-recovery
+    node: phase-planning
+    phase: verified-recovery
+    blocks:
+      - common.mission
+      - common.safety-framing
+      - common.evidence-framing
+      - common.guardian-mediation
+      - common.output-format
+      - common.budget-discipline
+      - role.supervision.common
+      - role.supervision.verified-recovery
+      - structural.s1.supervisor
+      - tool.issue-capability-token
+      - tool.complete-phase
+    tools:
+      - issue_capability_token
+      - complete_phase
+  - id: executor
+    node: bounded-execution
+    phase: null
+    blocks:
+      - common.mission
+      - common.safety-framing
+      - common.evidence-framing
+      - common.guardian-mediation
+      - common.output-format
+      - common.budget-discipline
+      - role.execution.mission
+      - role.execution.procedure
+      - structural.s1.executor
+      - tool.guardian-action
+      - tool.cluster-api-request
+      - tool.complete-phase
+    tools:
+      - guardian_action
+      - cluster_api_request
+      - complete_phase
+  - id: consolidator
+    node: consolidation
+    phase: null
+    blocks:
+      - common.mission
+      - common.safety-framing
+      - common.evidence-framing
+      - common.guardian-mediation
+      - common.output-format
+      - common.budget-discipline
+      - role.coordination.procedure
+      - structural.s1.consolidator
+      - tool.complete-phase
+    tools:
+      - complete_phase
+# Only the phase's own supervisor appears in that phase's allocation; the other three do
+# not act in it and are therefore absent rather than budgeted at zero.
+budgets:
+  detection-and-investigation:
+    orchestrator:
+      max_turns: 1
+      max_tool_calls: 0
+    supervisor-detection-and-investigation:
+      max_turns: 3
+      max_tool_calls: 2
+    executor:
+      max_turns: 5
+      max_tool_calls: 6
+    consolidator:
+      max_turns: 1
+      max_tool_calls: 0
+  containment:
+    orchestrator:
+      max_turns: 1
+      max_tool_calls: 0
+    supervisor-containment:
+      max_turns: 3
+      max_tool_calls: 2
+    executor:
+      max_turns: 4
+      max_tool_calls: 6
+    consolidator:
+      max_turns: 1
+      max_tool_calls: 0
+  eradication:
+    orchestrator:
+      max_turns: 1
+      max_tool_calls: 0
+    supervisor-eradication:
+      max_turns: 3
+      max_tool_calls: 2
+    executor:
+      max_turns: 4
+      max_tool_calls: 6
+    consolidator:
+      max_turns: 1
+      max_tool_calls: 0
+  verified-recovery:
+    orchestrator:
+      max_turns: 1
+      max_tool_calls: 0
+    supervisor-verified-recovery:
+      max_turns: 3
+      max_tool_calls: 2
+    executor:
+      max_turns: 3
+      max_tool_calls: 4
+    consolidator:
+      max_turns: 1
+      max_tool_calls: 0

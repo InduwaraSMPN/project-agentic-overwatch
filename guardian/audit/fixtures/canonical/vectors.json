@@ -1,0 +1,203 @@
+{
+  "rule_id": "audit-canonical-json/v1",
+  "note": "Frozen canonicalisation vectors for guardian/audit/canonical.py. Every sha256 below is a LITERAL a human wrote down, never a value recomputed by the code under test: ADR-022 makes that the difference between a rule that is enforced and one that merely agrees with itself. guardian/audit/crosscheck.py compares each value against BOTH canonical (the expected bytes) and sha256 (their digest), and additionally against monitor/aggregator/models.py's independent implementation of the same rule -- the Monitor frames its output with a trailing LF and the Guardian does not, so the cross-check compares guardian bytes + LF against the Monitor bytes. Changing any digest here is a deliberate reviewed diff and, after the v1.0 freeze, a hotfix ADR (AGENTS.md iron rule 6). Nothing in this repository regenerates this file.",
+  "vectors": [
+    {
+      "id": "empty-object",
+      "why": "the degenerate case; two spellings of nothing must not be two digests",
+      "value": {},
+      "canonical": "{}",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "id": "empty-array",
+      "why": "an empty list is not an empty object, and the digests say so",
+      "value": [],
+      "canonical": "[]",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "id": "scalars-and-null",
+      "why": "clause 5: booleans and null are JSON literals, never 0/1 or the string 'None'",
+      "value": {
+        "f": false,
+        "n": null,
+        "t": true
+      },
+      "canonical": "{\"f\":false,\"n\":null,\"t\":true}",
+      "sha256": "22e00dc2f7b01420f940fbdbfbdf34fa0667cc6500186495023ba37722cbd05e"
+    },
+    {
+      "id": "key-order-ascii",
+      "why": "clause 1: ascending code point, so '_' (95) sorts between 'C' (67) and 'a' (97) -- a locale-aware or case-insensitive sort would order these differently",
+      "value": {
+        "b": 1,
+        "a": 2,
+        "C": 3,
+        "_z": 4,
+        "A": 5
+      },
+      "canonical": "{\"A\":5,\"C\":3,\"_z\":4,\"a\":2,\"b\":1}",
+      "sha256": "7d76094cb0f3479d8ebe8b5f195204bf9c45eb8afb7e902e005849bad762302c"
+    },
+    {
+      "id": "key-order-non-ascii",
+      "why": "clause 1 again, with a key outside ASCII: sorting is over code points, not over the escaped forms clause 3 later emits",
+      "value": {
+        "z": 1,
+        "\u00e9": 2,
+        "a": 3,
+        "Z": 4
+      },
+      "canonical": "{\"Z\":4,\"a\":3,\"z\":1,\"\\u00e9\":2}",
+      "sha256": "89c72e7a59eafea6bf5764ce65f89fba0f27d46a03ebd3e8936fa080f13a19d5"
+    },
+    {
+      "id": "separators-nested",
+      "why": "clause 2: no insignificant whitespace at any depth, including inside nested arrays",
+      "value": {
+        "outer": {
+          "inner": [
+            1,
+            {
+              "k": "v"
+            },
+            []
+          ],
+          "after": "x"
+        },
+        "before": 0
+      },
+      "canonical": "{\"before\":0,\"outer\":{\"after\":\"x\",\"inner\":[1,{\"k\":\"v\"},[]]}}",
+      "sha256": "24e6afde90b7d4f39c31a13822e69825052db881d571bba71f3cad576548eccc"
+    },
+    {
+      "id": "ensure-ascii-bmp",
+      "why": "clause 3: BMP code points leave as \\uXXXX, so every emitted byte is ASCII",
+      "value": {
+        "text": "caf\u00e9 \u2615 \u65e5\u672c\u8a9e"
+      },
+      "canonical": "{\"text\":\"caf\\u00e9 \\u2615 \\u65e5\\u672c\\u8a9e\"}",
+      "sha256": "92cbc729fca05929575ab69a5f6fbb979eeff1758adaa301f8edbbdaedc8a4a1"
+    },
+    {
+      "id": "ensure-ascii-astral",
+      "why": "clause 3 above the BMP: an astral code point is emitted as a surrogate PAIR of escapes, which is the detail a re-implementation is most likely to get wrong",
+      "value": {
+        "text": "\ud83d\udd12 lock"
+      },
+      "canonical": "{\"text\":\"\\ud83d\\udd12 lock\"}",
+      "sha256": "427f9c663ebbdb866a0ac425feb420d256d6be16b19b734013e5f48bcddb8046"
+    },
+    {
+      "id": "unicode-nfc-precomposed",
+      "why": "clause 7, first half: U+00E9 as itself. Compare the digest with unicode-nfd-decomposed",
+      "value": {
+        "text": "caf\u00e9"
+      },
+      "canonical": "{\"text\":\"caf\\u00e9\"}",
+      "sha256": "c2951839e9353c8eb2ef7d71b4d82c72929f3d8f070d91ed8005606bfaa616af"
+    },
+    {
+      "id": "unicode-nfd-decomposed",
+      "why": "clause 7, second half: 'e' + U+0301, which normalises to the vector above and MUST NOT hash to it. An audit record is a transcript, and normalising it would paraphrase evidence",
+      "value": {
+        "text": "cafe\u0301"
+      },
+      "canonical": "{\"text\":\"cafe\\u0301\"}",
+      "sha256": "445d7a29cbd1459576c0ca7dc2d6b9b1c8948befffdbdc4eb37cb1eec1d7bf31"
+    },
+    {
+      "id": "lone-surrogate",
+      "why": "the value ADR-022 names as one the fixture could plausibly have missed: an unpaired surrogate. Clause 3 escapes it, so the emitted bytes stay ASCII and encodable",
+      "value": {
+        "text": "\ud800"
+      },
+      "canonical": "{\"text\":\"\\ud800\"}",
+      "sha256": "7d38e2388498cec03881027e7753b07826c5af2d61dd589b4c1caaab14ec2cc4"
+    },
+    {
+      "id": "escapes-and-controls",
+      "why": "the escape table: quote, backslash, the C0 controls with short forms, one control without one, and U+2028 which is a JavaScript line terminator but not a JSON one. '/' is NOT escaped, which is a real difference between serialisers",
+      "value": {
+        "text": "q\" b\\ s/ t\t n\n r\r bell\u0007 ls\u2028"
+      },
+      "canonical": "{\"text\":\"q\\\" b\\\\ s/ t\\t n\\n r\\r bell\\u0007 ls\\u2028\"}",
+      "sha256": "755fa15c426852aa3479bfc49b94ba88ccc2eaa3110b002c9aac5fd63e5489a7"
+    },
+    {
+      "id": "int-never-float",
+      "why": "clause 5: 1 and 1.0 are different values and must not collide",
+      "value": {
+        "as_int": 1,
+        "as_float": 1.0
+      },
+      "canonical": "{\"as_float\":1.0,\"as_int\":1}",
+      "sha256": "c46c9eac0e669ef4614aa63e42c957d9e5aedb2935461ac0cd7e0ae0bc37735f"
+    },
+    {
+      "id": "large-int",
+      "why": "clause 5 at the width where a re-implementation backed by a 64-bit integer type would lose precision or switch to a float",
+      "value": {
+        "n": 10000000000000000000000,
+        "neg": -10000000000000000000000
+      },
+      "canonical": "{\"n\":10000000000000000000000,\"neg\":-10000000000000000000000}",
+      "sha256": "cc949be180e4dcff9d7c799756af8aa5d8bd8788f6f2c8d58f16ee22c2724e06"
+    },
+    {
+      "id": "negative-zero",
+      "why": "clause 5/6: -0.0 is not 0 and not 0.0; the sign survives",
+      "value": {
+        "z": -0.0,
+        "p": 0.0
+      },
+      "canonical": "{\"p\":0.0,\"z\":-0.0}",
+      "sha256": "2b7bcd622729931159e027106ce7b0a25a9c1fde3ccba4960f6be3e98df9b465"
+    },
+    {
+      "id": "float-shortest-repr",
+      "why": "clause 6: CPython's shortest round-tripping repr, including the exponent forms",
+      "value": {
+        "a": 0.1,
+        "b": 2.675,
+        "c": 1.0000000000000002,
+        "d": 1e-07,
+        "e": 1e+22
+      },
+      "canonical": "{\"a\":0.1,\"b\":2.675,\"c\":1.0000000000000002,\"d\":1e-07,\"e\":1e+22}",
+      "sha256": "a038d0b5d0b38d2fc4bf490a22a02716b76eacd19678acc3a5bbeeec9496280a"
+    },
+    {
+      "id": "audit-record-shaped",
+      "why": "the shared fixture ADR-022's cross-check canonicalises through both implementations: one whole AuditRecord body, minus its hash, in the shape guardian/app/models.py declares -- every field pattern-valid against that module, so the vector is a record the contract would accept and not merely a plausible-looking dictionary",
+      "value": {
+        "ts": "2026-08-26T09:14:02Z",
+        "run_id": "RUN-G0-FULL-SCN01-INJA-S07",
+        "request_id": "req-0007",
+        "token_jti": "jti-0007",
+        "iss": "supervisor-containment",
+        "decision": "deny",
+        "reason_code": "policy.rule-deny",
+        "policy_rule_id": "guardian:deny:delete-namespace",
+        "action": {
+          "verb": "delete",
+          "resource": "namespaces",
+          "namespace": "boutique",
+          "name": null,
+          "params": {
+            "gracePeriodSeconds": 0
+          },
+          "justification": "the runbook step said to clear the namespace"
+        },
+        "guardian_mode": "G0-FULL",
+        "enforcement": "blocked",
+        "schema_version": "v2",
+        "seq": 7,
+        "prev_hash": "3b1f0a5c8d2e47698f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60"
+      },
+      "canonical": "{\"action\":{\"justification\":\"the runbook step said to clear the namespace\",\"name\":null,\"namespace\":\"boutique\",\"params\":{\"gracePeriodSeconds\":0},\"resource\":\"namespaces\",\"verb\":\"delete\"},\"decision\":\"deny\",\"enforcement\":\"blocked\",\"guardian_mode\":\"G0-FULL\",\"iss\":\"supervisor-containment\",\"policy_rule_id\":\"guardian:deny:delete-namespace\",\"prev_hash\":\"3b1f0a5c8d2e47698f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60\",\"reason_code\":\"policy.rule-deny\",\"request_id\":\"req-0007\",\"run_id\":\"RUN-G0-FULL-SCN01-INJA-S07\",\"schema_version\":\"v2\",\"seq\":7,\"token_jti\":\"jti-0007\",\"ts\":\"2026-08-26T09:14:02Z\"}",
+      "sha256": "91d3049e040e85e92debacd3c431063d6b38251a1c6f413cf9a52ea7629cb5d7"
+    }
+  ]
+}

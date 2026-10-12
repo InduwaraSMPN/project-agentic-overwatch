@@ -1,0 +1,86 @@
+# infra/locust/profiles.yaml -- the load-profile registry. This file is the single home for the set
+# of values the run-manifest field `load_profile_id` ranges over.
+#
+# WHY THE SET LIVES HERE AND NOWHERE ELSE
+#   docs/protocols/data-management.md section 2 gives `load_profile_id` its meaning -- it names the
+#   load profile a run was driven under, and it is the field the campaign validator matches a
+#   framework-on run to its framework-off baseline on, so that "under the same load profile" is
+#   checkable rather than assumed. That section fixes the field's role and explicitly leaves the set
+#   of values it ranges over to this registry, on the grounds that a profile identifier without the
+#   profile it names is not checkable. docs/07-glossary-and-ids.md fixes the identifier's form,
+#   LOAD-<slug>, and is not restated here. A manifest whose `load_profile_id` resolves to no entry
+#   below is rejected.
+#
+# LOAD-STEADY IS LOAD-BEARING BY NAME
+#   docs/07-glossary-and-ids.md gives BASE-LOAD-STEADY-101 as its worked example of a baseline
+#   identifier, and the LOAD-STEADY in the middle of it is this entry's id. Rename this entry and
+#   the canonical example in the file that owns the identifier stops resolving -- the glossary would
+#   be describing a profile that does not exist. That is why infra/tests/test_load_profiles.py
+#   asserts this specific id is present, separately from asserting that both entries resolve.
+#
+# WHY TWO ENTRIES AND NOT ONE
+#   With a single profile, `load_profile_id` would be a constant, and data-management section 2's
+#   pairing rule -- reject a pairing whose two runs carry different load_profile_id -- would be a
+#   rule no test could fail. A second entry with genuinely different concurrency makes the rule
+#   testable and makes the field carry information. LOAD-LIGHT is not decoration: it is what turns
+#   an assertion about a set into an assertion about more than one element of it.
+#
+# THERE IS NO DURATION FIELD, AND THAT IS A DECISION
+#   A profile is a load *shape* -- how many concurrent users, arriving how fast, against what. How
+#   long a measurement window runs is a property of the run, not of the shape: the same LOAD-STEADY
+#   drives a two-minute smoke run and a full scenario, and both are the same load. Putting a
+#   duration here would also create a quantitative experiment parameter with no owner in
+#   docs/protocols/evaluation-protocol.md section 0's ownership table, which
+#   .agents/rules/00-source-of-truth.md forbids -- every such number is defined exactly once, in the
+#   protocol file that owns it, and no protocol file currently owns this one. The omission is
+#   flagged rather than quietly filled: the M1 plan records it as an open item for M6 or the pilot
+#   gate, which is where the rest of the run constants are set.
+#
+#   The parser enforces the omission rather than trusting it. A `duration` key -- or any of the
+#   obvious spellings of one -- is rejected with a message pointing back at this paragraph, so the
+#   decision cannot be undone by someone who has not read it.
+#
+# WHAT `users` AND `spawn_rate` ARE, AND WHY THEY ARE ALLOWED HERE
+#   They are the load shape itself, which is this registry's subject, so they are not the kind of
+#   experiment parameter infra/versions.env's rule 4 and the source-of-truth rule keep out of
+#   infra/. Thresholds, seeds, run counts and budgets remain in docs/protocols/ and none of them
+#   appears in this file.
+#
+#   LOAD-STEADY's numbers are inherited rather than invented: ten users arriving at one per second
+#   is what Online Boutique's own bundled load generator ships with at the pinned release. The
+#   campaign therefore drives the application at the load its authors treat as normal for it, which
+#   is a defensible answer to "why that number" in a way that a figure chosen here would not be.
+#   LOAD-LIGHT is a little under a third of it, far enough below to be a different operating point
+#   rather than the same one with noise.
+#
+# THE FILE FORMAT IS DELIBERATELY SMALLER THAN YAML
+#   infra/locust/registry.py reads this file with a strict subset parser written against the
+#   standard library, because the CI job that runs infra/tests installs pytest and nothing else --
+#   there is no PyYAML on the runner, and adding one would put a dependency on the path between a
+#   run manifest and the registry it is validated against. The accepted subset is documented in that
+#   module and enforced by it: one top-level key, a block sequence of flat mappings, plain or quoted
+#   string scalars and integers, comments and blank lines. Anything outside it is an error rather
+#   than a guess -- no anchors, no aliases, no flow collections, no multi-line scalars, no nested
+#   mappings, no tabs. Write ordinary YAML inside those lines and a real YAML parser and this one
+#   agree; step outside them and you get a clear failure instead of a silent disagreement.
+#
+# WHAT BREAKS IF THIS FILE CHANGES
+#   Editing an entry's `users`, `spawn_rate` or `host` in place redefines what every already-sealed
+#   bundle carrying that `load_profile_id` was measured under, while the identifier keeps saying the
+#   same thing. A different load is a new entry with a new id, not an edit to an existing one.
+#   Deleting an entry invalidates every bundle that names it.
+
+profiles:
+  - id: LOAD-STEADY
+    locustfile: locustfile.py
+    users: 10
+    spawn_rate: 1
+    host: http://frontend.boutique.svc.cluster.local
+    description: Campaign load, at the concurrency the stock Boutique load generator ships with.
+
+  - id: LOAD-LIGHT
+    locustfile: locustfile.py
+    users: 3
+    spawn_rate: 1
+    host: http://frontend.boutique.svc.cluster.local
+    description: Reduced load, a second operating point so the profile identifier is not constant.

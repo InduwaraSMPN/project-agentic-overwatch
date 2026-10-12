@@ -1,0 +1,136 @@
+# Templated from guardian/deploy/rbac.yaml. Read that file for the full rationale behind every
+# verb (why it is granted, why the absent verbs -- pods/exec, pods/portforward, secrets,
+# wildcards, deletecollection, watch -- are refused, and how the two Tier B `kubectl auth
+# can-i` assertions verify this against the live API server). This template changes NAMES
+# (namespace, ServiceAccount name via values) and nothing else: the verb table, resource list
+# and API groups below are copied unchanged. No verb was added or removed for packaging.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: guardian
+  namespace: {{ .Values.namespaces.guardian }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: guardian
+# automountServiceAccountToken left unset (=true): this account IS the Guardian's credential.
+---
+# CLUSTER-SCOPED GRANT: read-only. nodes/namespaces get+list for detection-and-investigation;
+# no mutating verb, no wildcard. See guardian/deploy/rbac.yaml for the full argument.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agentic-overwatch-guardian-cluster-read
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: guardian
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agentic-overwatch-guardian-cluster-read
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: guardian
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agentic-overwatch-guardian-cluster-read
+subjects:
+  # Exactly one subject, forever -- a second subject here ends the sole-credential-holder
+  # claim guardian/deploy/rbac.yaml's Tier B assertion (2) checks for.
+  - kind: ServiceAccount
+    name: guardian
+    namespace: {{ .Values.namespaces.guardian }}
+---
+# THE MUTATING GRANT, CONFINED TO THE TARGET APPLICATION'S NAMESPACE (boutique).
+#
+# This namespace is NOT created by this chart -- see values.yaml namespaces.boutique. Applying
+# this RoleBinding against a cluster with no such namespace fails loudly, which is the
+# intended failure (nothing half-applied), matching guardian/deploy/rbac.yaml's own contract.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agentic-overwatch-guardian-incident-response
+  namespace: {{ .Values.namespaces.boutique }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: guardian
+rules:
+  # --- detection-and-investigation: read the environment -------------------------------------
+  - apiGroups: [""]
+    resources: ["pods", "services", "events"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list"]
+
+  # --- containment: quarantine a workload, at the label layer or the network layer ------------
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "delete"]
+  # ADR-083: revoke an escalation's subject. `get` is the internal pre-read the patch needs,
+  # never a capability offered to an agent; `patch` is the fixed subject-removal shape
+  # guardian/app/executor.py's _revoke_rolebinding_subject_body builds.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "patch"]
+  # ADR-090: Kubernetes' own escalation-prevention check requires `bind` even for a
+  # subject-removing patch. Scoped to SCN-SIM-02's fixed target Role and nothing else -- this
+  # name is a scenario fixture defined under scenarios/, which this chart never touches, and
+  # must not be changed here independently of that fixture.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    resourceNames: ["boutique-escalation"]
+    verbs: ["bind"]
+
+  # --- containment, eradication and verified-recovery: change the controller's desired state ---
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch"]
+
+  # --- eradication: remove the compromised instance and any persistence it established ---------
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agentic-overwatch-guardian-incident-response
+  namespace: {{ .Values.namespaces.boutique }}
+  labels:
+    {{- include "agentic-overwatch.chartLabels" . | nindent 4 }}
+    app.kubernetes.io/component: guardian
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agentic-overwatch-guardian-incident-response
+subjects:
+  - kind: ServiceAccount
+    name: guardian
+    namespace: {{ .Values.namespaces.guardian }}
